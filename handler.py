@@ -153,6 +153,7 @@ WIENER_EXPONENT = 2.0      # Wiener mask exponent (2 = standard power-law)
 WIENER_FLOOR = 1e-8        # Spectral floor to avoid division by zero
 CHUNK_SECONDS = 4.0        # Model was trained on 4s segments
 OVERLAP_RATIO = 0.5        # 50% overlap between chunks
+MAIN_VOICE_THRESHOLD = 0.3 # Minimum confidence to be considered a main voice
 
 
 # ── 1. Wiener Post-Filter ────────────────────────────────────
@@ -340,6 +341,121 @@ def postprocess_track(audio: np.ndarray, sr: int) -> np.ndarray:
     audio = highpass_filter(audio, sr)
     audio = normalize_audio(audio)
     return audio
+
+
+# ─────────────────────────────────────────────────────────────
+#  VOICE CONFIDENCE SCORING
+# ─────────────────────────────────────────────────────────────
+def score_voice_confidence(audio: np.ndarray, sr: int) -> float:
+    """
+    Score how likely a track contains a clear, decipherable human voice.
+
+    Combines four acoustic metrics:
+      1. RMS Energy        – is the signal loud enough to be speech?
+      2. Spectral Centroid – does the frequency center match speech (1–4 kHz)?
+      3. Zero-Crossing Rate – speech has moderate ZCR; noise is very high.
+      4. Voiced Frame Ratio – how many short frames have periodic structure
+                              (detected via autocorrelation peaks)?
+
+    Returns a confidence score between 0.0 and 1.0.
+    """
+    T = len(audio)
+    if T == 0:
+        return 0.0
+
+    # ── 1. RMS Energy Score ──────────────────────────────────
+    rms = np.sqrt(np.mean(audio ** 2))
+    if rms < 1e-7:
+        return 0.0  # Silent track
+    # Map RMS: below -60dB → 0, above -20dB → 1
+    rms_db = 20 * np.log10(rms + 1e-10)
+    rms_score = np.clip((rms_db + 60) / 40, 0.0, 1.0)
+
+    # ── 2. Spectral Centroid Score ───────────────────────────
+    # Use STFT to compute the mean spectral centroid
+    n_fft = min(1024, T)
+    hop = n_fft // 4
+    # Pad if needed
+    padded = np.pad(audio, (0, max(0, n_fft - T)))
+    frames = np.lib.stride_tricks.sliding_window_view(padded, n_fft)[::hop]
+    window = np.hanning(n_fft)
+    magnitudes = np.abs(np.fft.rfft(frames * window, n=n_fft))  # [num_frames, freq_bins]
+    freqs = np.fft.rfftfreq(n_fft, 1.0 / sr)
+
+    mag_sum = magnitudes.sum(axis=1, keepdims=True) + 1e-10
+    centroids = (magnitudes * freqs[np.newaxis, :]).sum(axis=1, keepdims=True) / mag_sum
+    mean_centroid = centroids.mean()
+
+    # Speech centroid is typically 1000–4000 Hz
+    # Score peaks at ~2500 Hz, falls off outside 500–6000 Hz
+    centroid_ideal = 2500.0
+    centroid_width = 2000.0
+    centroid_score = np.exp(-0.5 * ((mean_centroid - centroid_ideal) / centroid_width) ** 2)
+
+    # ── 3. Zero-Crossing Rate Score ──────────────────────────
+    zero_crossings = np.sum(np.abs(np.diff(np.sign(audio))) > 0) / T
+    # Normalize by sample rate — speech ZCR is typically 0.02–0.10
+    zcr_normalized = zero_crossings  # already per-sample
+    # Score: peak around 0.05, drops at very low (<0.01) or high (>0.2)
+    zcr_ideal = 0.05
+    zcr_width = 0.06
+    zcr_score = np.exp(-0.5 * ((zcr_normalized - zcr_ideal) / zcr_width) ** 2)
+
+    # ── 4. Voiced Frame Ratio ────────────────────────────────
+    # Check short frames for periodicity using autocorrelation
+    frame_len = min(int(0.03 * sr), T)  # 30ms frames
+    frame_hop = frame_len // 2
+    voiced_count = 0
+    total_frames = 0
+
+    for start in range(0, T - frame_len, frame_hop):
+        frame = audio[start:start + frame_len]
+        frame_energy = np.sum(frame ** 2)
+        if frame_energy < 1e-10:
+            total_frames += 1
+            continue
+
+        # Autocorrelation (normalized)
+        frame = frame - frame.mean()
+        corr = np.correlate(frame, frame, mode='full')
+        corr = corr[len(corr) // 2:]  # Take positive lags only
+        corr = corr / (corr[0] + 1e-10)  # Normalize
+
+        # Look for peaks in the pitch range (80–400 Hz)
+        min_lag = max(1, int(sr / 400))  # 400 Hz
+        max_lag = min(len(corr) - 1, int(sr / 80))  # 80 Hz
+
+        if max_lag > min_lag:
+            search_region = corr[min_lag:max_lag + 1]
+            peak_val = np.max(search_region)
+            if peak_val > 0.3:  # Voiced threshold
+                voiced_count += 1
+
+        total_frames += 1
+
+    voiced_ratio = voiced_count / max(total_frames, 1)
+
+    # ── Combine Scores ───────────────────────────────────────
+    # Weighted combination: voiced ratio is the strongest indicator
+    weights = {
+        'rms': 0.15,
+        'centroid': 0.20,
+        'zcr': 0.15,
+        'voiced': 0.50,
+    }
+    confidence = (
+        weights['rms'] * rms_score +
+        weights['centroid'] * centroid_score +
+        weights['zcr'] * zcr_score +
+        weights['voiced'] * voiced_ratio
+    )
+    confidence = float(np.clip(confidence, 0.0, 1.0))
+
+    logger.info(
+        "Voice confidence: %.3f (rms=%.2f, centroid=%.2f[%.0fHz], zcr=%.2f, voiced=%.2f)",
+        confidence, rms_score, centroid_score, mean_centroid, zcr_score, voiced_ratio
+    )
+    return round(confidence, 3)
 # ─────────────────────────────────────────────────────────────
 def handler(job):
     """RunPod serverless handler – separates speakers from a mixed audio."""
@@ -384,21 +500,28 @@ def handler(job):
     except Exception as e:
         logger.warning("Wiener filter failed, using raw estimates: %s", e)
 
-    # ── Post-process each track ──────────────────────────────
+    # ── Post-process & score each track ───────────────────────
     num_speakers = estimate_sources.shape[0]
     tracks = []
     for c in range(num_speakers):
         track_audio = postprocess_track(estimate_sources[c], sample_rate)
+        confidence = score_voice_confidence(track_audio, sample_rate)
         tracks.append({
             "speaker": c + 1,
+            "confidence": confidence,
+            "is_main": confidence >= MAIN_VOICE_THRESHOLD,
             "audio_base64": encode_audio(track_audio, sample_rate),
         })
 
-    logger.info("Separated %d speakers (with Wiener + highpass + normalization)",
-                num_speakers)
+    # Sort by confidence descending
+    tracks.sort(key=lambda t: t["confidence"], reverse=True)
+
+    main_count = sum(1 for t in tracks if t["is_main"])
+    logger.info("Separated %d speakers (%d main voices)", num_speakers, main_count)
     return {
         "separated_tracks": tracks,
         "num_speakers": num_speakers,
+        "main_voices": main_count,
     }
 
 
