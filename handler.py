@@ -36,6 +36,7 @@ import requests
 import runpod
 import soundfile as sf
 import torch
+from scipy.signal import butter, sosfilt
 
 # ── Ensure svoice package is importable ──────────────────────
 sys.path.insert(0, "/app")
@@ -141,13 +142,169 @@ def encode_audio(audio_np: np.ndarray, sr: int) -> str:
     buf.seek(0)
     return base64.b64encode(buf.read()).decode("utf-8")
 # ─────────────────────────────────────────────────────────────
-#  AUDIO NORMALIZATION
+#  POST-PROCESSING: Quality Optimizations
 # ─────────────────────────────────────────────────────────────
-TARGET_LUFS_DB = -20.0   # Target loudness (dBFS) – natural speech level
-PEAK_LIMIT_DB = -1.0     # Hard peak ceiling to prevent clipping
-SILENCE_THRESHOLD = 1e-6 # Below this RMS, consider the track silent
+TARGET_LUFS_DB = -20.0     # Target loudness (dBFS) – natural speech level
+PEAK_LIMIT_DB = -1.0       # Hard peak ceiling to prevent clipping
+SILENCE_THRESHOLD = 1e-6   # Below this RMS, consider the track silent
+HIGHPASS_FREQ = 80.0       # High-pass cutoff (Hz) – removes DC + rumble
+HIGHPASS_ORDER = 4         # Butterworth filter order
+WIENER_EXPONENT = 2.0      # Wiener mask exponent (2 = standard power-law)
+WIENER_FLOOR = 1e-8        # Spectral floor to avoid division by zero
+CHUNK_SECONDS = 4.0        # Model was trained on 4s segments
+OVERLAP_RATIO = 0.5        # 50% overlap between chunks
 
 
+# ── 1. Wiener Post-Filter ────────────────────────────────────
+def wiener_postfilter(mixture: np.ndarray, estimates: np.ndarray,
+                     n_fft: int = 1024, hop_length: int = 256) -> np.ndarray:
+    """
+    Apply Wiener filtering in the STFT domain to reduce speaker bleed.
+
+    For each source, computes a soft time-frequency mask:
+        mask_i = |S_i|^p / (sum |S_j|^p + eps)
+    then applies it to the mixture STFT to get a cleaner estimate.
+
+    Args:
+        mixture:   [T] mono mixture signal
+        estimates: [C, T] raw separated source estimates
+    Returns:
+        [C, T] Wiener-filtered estimates
+    """
+    num_sources, T = estimates.shape
+
+    # STFT of mixture
+    mix_stft = np.fft.rfft(np.lib.stride_tricks.sliding_window_view(
+        np.pad(mixture, (0, n_fft - len(mixture) % n_fft)),
+        n_fft)[::hop_length] * np.hanning(n_fft))  # [frames, freq]
+
+    # STFT of each estimate
+    est_stfts = []
+    for c in range(num_sources):
+        padded = np.pad(estimates[c], (0, n_fft - len(estimates[c]) % n_fft))
+        frames = np.lib.stride_tricks.sliding_window_view(padded, n_fft)[::hop_length]
+        est_stfts.append(np.fft.rfft(frames * np.hanning(n_fft)))
+
+    # Compute Wiener masks and apply
+    power_sum = sum(np.abs(s) ** WIENER_EXPONENT for s in est_stfts) + WIENER_FLOOR
+    filtered = np.zeros_like(estimates)
+
+    for c in range(num_sources):
+        mask = np.abs(est_stfts[c]) ** WIENER_EXPONENT / power_sum  # [frames, freq]
+        masked_stft = mix_stft * mask
+
+        # Inverse STFT via overlap-add
+        recon_frames = np.fft.irfft(masked_stft, n=n_fft)  # [frames, n_fft]
+        output = np.zeros(len(mixture) + n_fft)
+        window = np.hanning(n_fft)
+        for i, frame in enumerate(recon_frames):
+            start = i * hop_length
+            output[start:start + n_fft] += frame * window
+
+        # Normalize by window overlap
+        norm = np.zeros_like(output)
+        for i in range(len(recon_frames)):
+            start = i * hop_length
+            norm[start:start + n_fft] += window ** 2
+        norm = np.maximum(norm, 1e-8)
+        output /= norm
+
+        filtered[c] = output[:T]
+
+    logger.info("Wiener post-filter applied (n_fft=%d, hop=%d)", n_fft, hop_length)
+    return filtered
+
+
+# ── 2. High-Pass Filter ──────────────────────────────────────
+def highpass_filter(audio: np.ndarray, sr: int,
+                   cutoff: float = HIGHPASS_FREQ,
+                   order: int = HIGHPASS_ORDER) -> np.ndarray:
+    """
+    Apply a Butterworth high-pass filter to remove DC offset and
+    low-frequency rumble below `cutoff` Hz.
+    """
+    nyquist = sr / 2.0
+    if cutoff >= nyquist:
+        return audio  # Can't filter above Nyquist
+    sos = butter(order, cutoff / nyquist, btype='high', output='sos')
+    filtered = sosfilt(sos, audio).astype(np.float32)
+    return filtered
+
+
+# ── 3. Overlap-Add Chunked Inference ─────────────────────────
+def inference_overlap_add(model_fn, audio: np.ndarray, sr: int,
+                         chunk_sec: float = CHUNK_SECONDS,
+                         overlap: float = OVERLAP_RATIO) -> np.ndarray:
+    """
+    Run model inference on overlapping chunks with cross-fade blending.
+
+    Avoids edge artifacts that occur when processing long files in one shot
+    (the model was trained on 4s segments).
+
+    Args:
+        model_fn:  callable that takes [1, T] tensor → [1, C, T] tensor
+        audio:     [T] mono audio
+        sr:        sample rate
+        chunk_sec: chunk duration in seconds
+        overlap:   overlap ratio (0.5 = 50%)
+    Returns:
+        [C, T] separated sources
+    """
+    chunk_len = int(chunk_sec * sr)
+    hop = int(chunk_len * (1 - overlap))
+    T = len(audio)
+
+    # For short files, just run directly
+    if T <= chunk_len:
+        mixture = torch.tensor(audio, dtype=torch.float32).unsqueeze(0).to(DEVICE)
+        result = model_fn(mixture)[-1]  # [1, C, T]
+        return result[:, :, :T].cpu().numpy()[0]  # [C, T]
+
+    # Build Hann cross-fade window
+    window = np.hanning(chunk_len).astype(np.float32)
+
+    # Determine number of sources from a test chunk
+    test_chunk = torch.tensor(audio[:chunk_len], dtype=torch.float32).unsqueeze(0).to(DEVICE)
+    test_out = model_fn(test_chunk)[-1]
+    num_sources = test_out.shape[1]
+
+    output = np.zeros((num_sources, T), dtype=np.float32)
+    norm = np.zeros(T, dtype=np.float32)
+
+    pos = 0
+    while pos < T:
+        end = min(pos + chunk_len, T)
+        chunk = audio[pos:end]
+
+        # Pad short final chunk
+        if len(chunk) < chunk_len:
+            chunk = np.pad(chunk, (0, chunk_len - len(chunk)))
+
+        chunk_tensor = torch.tensor(chunk, dtype=torch.float32).unsqueeze(0).to(DEVICE)
+        with torch.no_grad():
+            est = model_fn(chunk_tensor)[-1]  # [1, C, chunk_len]
+        est = est[0].cpu().numpy()  # [C, chunk_len]
+
+        # Apply window and accumulate
+        actual_len = end - pos
+        w = window[:actual_len]
+        for c in range(num_sources):
+            output[c, pos:end] += est[c, :actual_len] * w
+        norm[pos:end] += w
+
+        pos += hop
+
+    # Normalize by accumulated window weights
+    norm = np.maximum(norm, 1e-8)
+    for c in range(num_sources):
+        output[c] /= norm
+
+    logger.info("Overlap-add inference: %d chunks (%.1fs each, %.0f%% overlap)",
+                (T - chunk_len) // hop + 2, chunk_sec, overlap * 100)
+    return output
+
+
+# ── 4. Loudness Normalization ────────────────────────────────
 def normalize_audio(audio: np.ndarray) -> np.ndarray:
     """
     Normalize audio to a natural loudness level.
@@ -157,29 +314,31 @@ def normalize_audio(audio: np.ndarray) -> np.ndarray:
     3. Apply gain to reach TARGET_LUFS_DB.
     4. Apply soft peak limiting so no sample exceeds PEAK_LIMIT_DB.
     """
-    # Skip silent / near-silent tracks
     rms = np.sqrt(np.mean(audio ** 2))
     if rms < SILENCE_THRESHOLD:
         logger.info("Track is silent (RMS=%.2e), skipping normalization", rms)
         return audio
 
-    # Current RMS in dB
     current_db = 20 * np.log10(rms + 1e-10)
-
-    # Gain needed to reach target
     gain_db = TARGET_LUFS_DB - current_db
     gain_linear = 10 ** (gain_db / 20.0)
-
     audio = audio * gain_linear
 
-    # Peak limiting: if any sample exceeds the ceiling, scale down
     peak = np.max(np.abs(audio))
-    peak_ceiling = 10 ** (PEAK_LIMIT_DB / 20.0)  # ~0.891
+    peak_ceiling = 10 ** (PEAK_LIMIT_DB / 20.0)
     if peak > peak_ceiling:
         audio = audio * (peak_ceiling / peak)
 
     logger.info("Normalized: RMS %.1f dB → %.1f dB, peak %.4f",
                 current_db, TARGET_LUFS_DB, np.max(np.abs(audio)))
+    return audio
+
+
+# ── Full post-processing pipeline ────────────────────────────
+def postprocess_track(audio: np.ndarray, sr: int) -> np.ndarray:
+    """Apply high-pass filter then loudness normalization to a single track."""
+    audio = highpass_filter(audio, sr)
+    audio = normalize_audio(audio)
     return audio
 # ─────────────────────────────────────────────────────────────
 def handler(job):
@@ -211,33 +370,32 @@ def handler(job):
 
     logger.info("Audio loaded: %.2f sec @ %d Hz", len(audio_np) / sample_rate, sample_rate)
 
-    # ── Run inference ────────────────────────────────────────
+    # ── Run inference (overlap-add for long files) ────────────
     try:
-        with torch.no_grad():
-            mixture = torch.tensor(audio_np, dtype=torch.float32).unsqueeze(0).to(DEVICE)
-            length = torch.tensor([audio_np.shape[0]], dtype=torch.long).to(DEVICE)
-
-            # model returns list of outputs per RNN layer; take the last one
-            estimate_sources = model(mixture)[-1]  # [1, C, T]
-
-            # Trim to original length
-            estimate_sources = estimate_sources[:, :, :audio_np.shape[0]]
-            estimate_sources = estimate_sources.cpu().numpy()
+        estimate_sources = inference_overlap_add(
+            model, audio_np, sample_rate
+        )  # [C, T]
     except Exception as e:
         return {"error": f"Inference failed: {str(e)}"}
 
-    # ── Build response ───────────────────────────────────────
-    num_speakers = estimate_sources.shape[1]
+    # ── Wiener post-filter to reduce speaker bleed ───────────
+    try:
+        estimate_sources = wiener_postfilter(audio_np, estimate_sources)
+    except Exception as e:
+        logger.warning("Wiener filter failed, using raw estimates: %s", e)
+
+    # ── Post-process each track ──────────────────────────────
+    num_speakers = estimate_sources.shape[0]
     tracks = []
     for c in range(num_speakers):
-        track_audio = estimate_sources[0, c, :]
-        track_audio = normalize_audio(track_audio)
+        track_audio = postprocess_track(estimate_sources[c], sample_rate)
         tracks.append({
             "speaker": c + 1,
             "audio_base64": encode_audio(track_audio, sample_rate),
         })
 
-    logger.info("Separated %d speakers", num_speakers)
+    logger.info("Separated %d speakers (with Wiener + highpass + normalization)",
+                num_speakers)
     return {
         "separated_tracks": tracks,
         "num_speakers": num_speakers,
