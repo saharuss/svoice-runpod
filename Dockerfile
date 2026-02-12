@@ -31,7 +31,6 @@ RUN pip install --no-cache-dir \
     numpy==1.24.4 \
     librosa==0.10.1 \
     soundfile==0.12.1 \
-    scipy==1.11.4 \
     tqdm==4.66.1 \
     hydra-core==1.3.2 \
     omegaconf==2.3.0 \

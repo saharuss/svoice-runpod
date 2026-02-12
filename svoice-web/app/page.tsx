@@ -14,6 +14,7 @@ import {
   ChevronRight,
   Mic,
   AudioLines,
+  FileText,
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 
@@ -22,6 +23,7 @@ interface Track {
   audio_base64: string;
   confidence: number;
   is_main: boolean;
+  transcription?: string;
 }
 
 function ConfidenceBadge({ confidence }: { confidence: number }) {
@@ -39,45 +41,58 @@ function ConfidenceBadge({ confidence }: { confidence: number }) {
 
 function TrackCard({ track }: { track: Track }) {
   return (
-    <div className="glass p-4 rounded-xl flex items-center justify-between gap-4 group hover:bg-white/10 transition-colors">
-      <div className="flex items-center gap-4">
-        <div
-          className={`w-10 h-10 rounded-full flex items-center justify-center font-bold ${track.is_main
+    <div className="glass p-4 rounded-xl space-y-3 group hover:bg-white/10 transition-colors">
+      <div className="flex items-center justify-between gap-4">
+        <div className="flex items-center gap-4">
+          <div
+            className={`w-10 h-10 rounded-full flex items-center justify-center font-bold ${track.is_main
               ? "bg-purple-500/30 text-purple-300"
               : "bg-white/5 text-white/30"
-            }`}
-        >
-          {track.speaker}
-        </div>
-        <div className="space-y-0.5">
-          <div className="flex items-center gap-2">
-            <p className="font-medium text-white/90">Speaker {track.speaker}</p>
-            <ConfidenceBadge confidence={track.confidence} />
+              }`}
+          >
+            {track.speaker}
           </div>
-          <p className="text-xs text-white/40">
-            {track.is_main ? "Main Voice" : "Background / Noise"}
+          <div className="space-y-0.5">
+            <div className="flex items-center gap-2">
+              <p className="font-medium text-white/90">Speaker {track.speaker}</p>
+              <ConfidenceBadge confidence={track.confidence} />
+            </div>
+            <p className="text-xs text-white/40">
+              {track.is_main ? "Main Voice • Enhanced" : "Background / Noise"}
+            </p>
+          </div>
+        </div>
+        <div className="flex items-center gap-3">
+          <audio
+            controls
+            src={`data:audio/wav;base64,${track.audio_base64}`}
+            className="w-full max-w-[200px] h-10 opacity-80 hover:opacity-100 transition-opacity"
+          />
+          <button
+            onClick={() => {
+              const link = document.createElement("a");
+              link.href = `data:audio/wav;base64,${track.audio_base64}`;
+              link.download = `speaker_${track.speaker}.wav`;
+              link.click();
+            }}
+            className="p-2 rounded-full bg-white/10 hover:bg-white/20 transition-colors text-white/80 hover:text-white"
+            title="Download Track"
+          >
+            <Download className="w-5 h-5" />
+          </button>
+        </div>
+      </div>
+      {track.transcription && (
+        <div className="ml-14 p-3 rounded-lg bg-white/5 border border-white/10">
+          <div className="flex items-center gap-2 mb-1.5">
+            <FileText className="w-3.5 h-3.5 text-purple-400" />
+            <span className="text-xs font-medium text-purple-400/80">Transcription</span>
+          </div>
+          <p className="text-sm text-white/70 leading-relaxed italic">
+            &ldquo;{track.transcription}&rdquo;
           </p>
         </div>
-      </div>
-      <div className="flex items-center gap-3">
-        <audio
-          controls
-          src={`data:audio/wav;base64,${track.audio_base64}`}
-          className="w-full max-w-[200px] h-10 opacity-80 hover:opacity-100 transition-opacity"
-        />
-        <button
-          onClick={() => {
-            const link = document.createElement("a");
-            link.href = `data:audio/wav;base64,${track.audio_base64}`;
-            link.download = `speaker_${track.speaker}.wav`;
-            link.click();
-          }}
-          className="p-2 rounded-full bg-white/10 hover:bg-white/20 transition-colors text-white/80 hover:text-white"
-          title="Download Track"
-        >
-          <Download className="w-5 h-5" />
-        </button>
-      </div>
+      )}
     </div>
   );
 }
