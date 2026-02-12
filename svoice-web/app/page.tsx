@@ -232,27 +232,68 @@ export default function Home() {
         const base64String = (reader.result as string).split(",")[1];
 
         try {
-          const response = await axios.post("/api/separate", {
+          // 1. Submit Job
+          const submitResponse = await axios.post("/api/separate", {
             audio_base64: base64String,
             sample_rate: 16000,
           });
 
-          if (response.data.separated_tracks) {
-            setTracks(response.data.separated_tracks);
-          } else {
-            setError("No tracks returned from server.");
+          const jobId = submitResponse.data.id;
+          if (!jobId) {
+            throw new Error("Failed to start job: No Job ID returned.");
           }
+
+          console.log("Job started:", jobId);
+
+          // 2. Poll Status
+          const pollInterval = 2000; // 2 seconds
+          const maxRetries = 60; // 2 minutes timeout (60 * 2s)
+          let retries = 0;
+
+          const poll = async () => {
+            try {
+              const statusResponse = await axios.get(`/api/status?id=${jobId}`);
+              const { status, output, error } = statusResponse.data;
+
+              console.log("Job Status:", status);
+
+              if (status === "COMPLETED") {
+                if (output && output.separated_tracks) {
+                  setTracks(output.separated_tracks);
+                  setIsProcessing(false);
+                } else {
+                  throw new Error("Job completed but returned no tracks.");
+                }
+              } else if (status === "FAILED") {
+                throw new Error(error || "Job failed on server.");
+              } else {
+                // IN_PROGRESS or QUEUED
+                retries++;
+                if (retries >= maxRetries) {
+                  throw new Error("Job timed out (client-side limit reached).");
+                }
+                setTimeout(poll, pollInterval);
+              }
+            } catch (pollErr: any) {
+              console.error("Polling Error:", pollErr);
+              setError(pollErr.message || "Failed to check job status.");
+              setIsProcessing(false);
+            }
+          };
+
+          // Start polling
+          poll();
+
         } catch (err: any) {
-          console.error("Upload error:", err);
+          console.error("Submission error:", err);
           if (err.response?.status === 413) {
             setError("File is too large for the server to process.");
           } else {
             setError(
-              err.response?.data?.error ||
-              "Failed to process audio. Check console for details."
+              err.response?.data?.error || err.message ||
+              "Failed to submit audio. Check console for details."
             );
           }
-        } finally {
           setIsProcessing(false);
         }
       };

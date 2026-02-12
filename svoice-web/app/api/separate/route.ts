@@ -27,10 +27,10 @@ export async function POST(req: NextRequest) {
             );
         }
 
-        // Call RunPod Sync Endpoint
-        const url = `https://api.runpod.ai/v2/${RUNPOD_ENDPOINT_ID}/runsync`;
+        // Call RunPod Async Endpoint (run) instead of Sync (runsync)
+        const url = `https://api.runpod.ai/v2/${RUNPOD_ENDPOINT_ID}/run`;
 
-        console.log(`Forwarding request to RunPod: ${url}`);
+        console.log(`Submitting job to RunPod: ${url}`);
 
         const response = await axios.post(
             url,
@@ -45,20 +45,19 @@ export async function POST(req: NextRequest) {
                     Authorization: `Bearer ${RUNPOD_API_KEY}`,
                     "Content-Type": "application/json",
                 },
-                timeout: 120000, // 2 minutes timeout for backend-to-backend
+                timeout: 10000, // Short timeout for job submission
             }
         );
 
         const data = response.data;
 
-        if (data.status === "FAILED") {
-            console.error("RunPod task failed:", data);
-            return NextResponse.json({ error: "RunPod task failed", details: data }, { status: 502 });
+        if (!data.id) {
+            console.error("RunPod submission failed:", data);
+            return NextResponse.json({ error: "RunPod submission failed", details: data }, { status: 502 });
         }
 
-        // runsync returns { status, output, id, ... }
-        // output contains { separated_tracks: [...] }
-        return NextResponse.json(data.output);
+        // Return the Job ID for polling
+        return NextResponse.json({ id: data.id, status: "IN_PROGRESS" });
 
     } catch (error: any) {
         console.error("API Error:", error.response?.data || error.message);
