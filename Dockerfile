@@ -38,6 +38,13 @@ RUN pip install --no-cache-dir \
     runpod==1.6.2 \
     requests==2.31.0
 
+# ── Whisper for AI-powered voice scoring ────────────────────
+RUN pip install --no-cache-dir "setuptools<71" && \
+    pip install --no-cache-dir --no-build-isolation openai-whisper==20231117
+
+# ── Pre-download Whisper tiny model (avoids network on cold start) ──
+RUN python -c "import whisper; whisper.load_model('tiny')"
+
 # ── Copy application code ───────────────────────────────────
 WORKDIR /app
 COPY svoice/ /app/svoice/

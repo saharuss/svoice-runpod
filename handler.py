@@ -36,6 +36,7 @@ import requests
 import runpod
 import soundfile as sf
 import torch
+import whisper
 from scipy.signal import butter, sosfilt
 
 # ── Ensure svoice package is importable ──────────────────────
@@ -99,8 +100,44 @@ def load_model():
                 DEVICE, f"{sum(p.numel() for p in model.parameters()):,}")
 
 
-# Attempt to load at import time (cold start)
+# ── Load Whisper tiny model for voice quality scoring ────────
+whisper_model = None
+
+def load_whisper():
+    """Load Whisper tiny model for transcription-based scoring."""
+    global whisper_model
+    try:
+        whisper_model = whisper.load_model("tiny", device=DEVICE)
+        logger.info("Whisper 'tiny' model loaded on %s", DEVICE)
+    except Exception as e:
+        logger.warning("Failed to load Whisper model: %s", e)
+
+
+# ── Load Silero VAD for speech activity detection ────────────
+vad_model = None
+vad_utils = None
+
+def load_vad():
+    """Load Silero VAD model for speech activity detection."""
+    global vad_model, vad_utils
+    try:
+        _model, utils = torch.hub.load(
+            repo_or_dir='snakers4/silero-vad',
+            model='silero_vad',
+            force_reload=False,
+            onnx=False,
+        )
+        vad_model = _model
+        vad_utils = utils
+        logger.info("Silero VAD loaded")
+    except Exception as e:
+        logger.warning("Failed to load Silero VAD: %s", e)
+
+
+# Attempt to load all models at import time (cold start)
 load_model()
+load_whisper()
+load_vad()
 
 
 # ─────────────────────────────────────────────────────────────
@@ -344,18 +381,117 @@ def postprocess_track(audio: np.ndarray, sr: int) -> np.ndarray:
 
 
 # ─────────────────────────────────────────────────────────────
-#  VOICE CONFIDENCE SCORING
+#  VOICE CONFIDENCE SCORING (AI-powered)
 # ─────────────────────────────────────────────────────────────
+
+def _vad_speech_ratio(audio: np.ndarray, sr: int) -> float:
+    """
+    Use Silero VAD to compute the fraction of audio that contains speech.
+
+    Returns a value between 0.0 (no speech) and 1.0 (all speech).
+    Fast (~5ms per track).
+    """
+    if vad_model is None:
+        return 0.5  # Default if VAD not loaded
+
+    try:
+        # Silero VAD expects 16kHz mono
+        if sr != 16000:
+            import librosa
+            audio_16k = librosa.resample(audio, orig_sr=sr, target_sr=16000)
+        else:
+            audio_16k = audio
+
+        tensor = torch.tensor(audio_16k, dtype=torch.float32)
+
+        # Process in 512-sample chunks (32ms at 16kHz)
+        window_size = 512
+        speech_probs = []
+        for i in range(0, len(tensor) - window_size, window_size):
+            chunk = tensor[i:i + window_size]
+            prob = vad_model(chunk, 16000).item()
+            speech_probs.append(prob)
+
+        if not speech_probs:
+            return 0.0
+
+        # Fraction of chunks with speech probability > 0.5
+        speech_ratio = sum(1 for p in speech_probs if p > 0.5) / len(speech_probs)
+        return speech_ratio
+
+    except Exception as e:
+        logger.warning("VAD scoring failed: %s", e)
+        return 0.5
+
+
+def _whisper_score(audio: np.ndarray, sr: int) -> dict:
+    """
+    Use Whisper tiny model to attempt transcription and extract quality metrics.
+
+    Returns:
+        {
+            'avg_logprob': float,    # Higher = clearer speech (-0.2 is great, -1.5 is noise)
+            'no_speech_prob': float, # 0.0 = definitely speech, 1.0 = definitely not
+            'word_count': int,       # Number of words transcribed
+            'text': str,             # The transcription itself
+        }
+    """
+    if whisper_model is None:
+        return {'avg_logprob': -1.0, 'no_speech_prob': 0.5, 'word_count': 0, 'text': ''}
+
+    try:
+        # Whisper expects 16kHz audio
+        if sr != 16000:
+            import librosa
+            audio_16k = librosa.resample(audio, orig_sr=sr, target_sr=16000)
+        else:
+            audio_16k = audio
+
+        # Whisper's transcribe function expects a file path or numpy array
+        # Use fp16=False if on CPU, True on GPU
+        result = whisper.transcribe(
+            whisper_model,
+            audio_16k,
+            language='en',
+            fp16=(DEVICE.type == 'cuda'),
+            verbose=False,
+        )
+
+        # Extract metrics from segments
+        segments = result.get('segments', [])
+        if not segments:
+            return {
+                'avg_logprob': -2.0,
+                'no_speech_prob': 1.0,
+                'word_count': 0,
+                'text': '',
+            }
+
+        avg_logprob = sum(s.get('avg_logprob', -1.0) for s in segments) / len(segments)
+        no_speech_prob = sum(s.get('no_speech_prob', 0.5) for s in segments) / len(segments)
+        text = result.get('text', '').strip()
+        word_count = len(text.split()) if text else 0
+
+        return {
+            'avg_logprob': avg_logprob,
+            'no_speech_prob': no_speech_prob,
+            'word_count': word_count,
+            'text': text,
+        }
+
+    except Exception as e:
+        logger.warning("Whisper scoring failed: %s", e)
+        return {'avg_logprob': -1.0, 'no_speech_prob': 0.5, 'word_count': 0, 'text': ''}
+
+
 def score_voice_confidence(audio: np.ndarray, sr: int) -> float:
     """
-    Score how likely a track contains a clear, decipherable human voice.
+    AI-powered voice confidence scoring.
 
-    Combines four acoustic metrics:
-      1. RMS Energy        – is the signal loud enough to be speech?
-      2. Spectral Centroid – does the frequency center match speech (1–4 kHz)?
-      3. Zero-Crossing Rate – speech has moderate ZCR; noise is very high.
-      4. Voiced Frame Ratio – how many short frames have periodic structure
-                              (detected via autocorrelation peaks)?
+    Combines:
+      1. Silero VAD   (30%) – fast speech detection, kills obvious noise
+      2. Whisper clarity (50%) – transcription confidence (avg_logprob)
+      3. Whisper no-speech (20%) – inverse of no_speech_prob
 
     Returns a confidence score between 0.0 and 1.0.
     """
@@ -363,97 +499,46 @@ def score_voice_confidence(audio: np.ndarray, sr: int) -> float:
     if T == 0:
         return 0.0
 
-    # ── 1. RMS Energy Score ──────────────────────────────────
+    # Quick energy check — skip near-silent tracks entirely
     rms = np.sqrt(np.mean(audio ** 2))
     if rms < 1e-7:
-        return 0.0  # Silent track
-    # Map RMS: below -60dB → 0, above -20dB → 1
-    rms_db = 20 * np.log10(rms + 1e-10)
-    rms_score = np.clip((rms_db + 60) / 40, 0.0, 1.0)
+        logger.info("Voice confidence: 0.000 (silent track)")
+        return 0.0
 
-    # ── 2. Spectral Centroid Score ───────────────────────────
-    # Use STFT to compute the mean spectral centroid
-    n_fft = min(1024, T)
-    hop = n_fft // 4
-    # Pad if needed
-    padded = np.pad(audio, (0, max(0, n_fft - T)))
-    frames = np.lib.stride_tricks.sliding_window_view(padded, n_fft)[::hop]
-    window = np.hanning(n_fft)
-    magnitudes = np.abs(np.fft.rfft(frames * window, n=n_fft))  # [num_frames, freq_bins]
-    freqs = np.fft.rfftfreq(n_fft, 1.0 / sr)
+    # ── 1. Silero VAD: speech activity ratio ─────────────────
+    vad_ratio = _vad_speech_ratio(audio, sr)
 
-    mag_sum = magnitudes.sum(axis=1, keepdims=True) + 1e-10
-    centroids = (magnitudes * freqs[np.newaxis, :]).sum(axis=1, keepdims=True) / mag_sum
-    mean_centroid = centroids.mean()
+    # Fast reject: if VAD says < 5% speech, don’t bother with Whisper
+    if vad_ratio < 0.05:
+        confidence = vad_ratio * 0.3  # Will be near 0
+        logger.info("Voice confidence: %.3f (VAD fast-reject, ratio=%.2f)",
+                    confidence, vad_ratio)
+        return round(confidence, 3)
 
-    # Speech centroid is typically 1000–4000 Hz
-    # Score peaks at ~2500 Hz, falls off outside 500–6000 Hz
-    centroid_ideal = 2500.0
-    centroid_width = 2000.0
-    centroid_score = np.exp(-0.5 * ((mean_centroid - centroid_ideal) / centroid_width) ** 2)
+    # ── 2. Whisper transcription scoring ───────────────────
+    w = _whisper_score(audio, sr)
 
-    # ── 3. Zero-Crossing Rate Score ──────────────────────────
-    zero_crossings = np.sum(np.abs(np.diff(np.sign(audio))) > 0) / T
-    # Normalize by sample rate — speech ZCR is typically 0.02–0.10
-    zcr_normalized = zero_crossings  # already per-sample
-    # Score: peak around 0.05, drops at very low (<0.01) or high (>0.2)
-    zcr_ideal = 0.05
-    zcr_width = 0.06
-    zcr_score = np.exp(-0.5 * ((zcr_normalized - zcr_ideal) / zcr_width) ** 2)
+    # Map avg_logprob to 0–1 score:
+    #   -0.2 and above = excellent (1.0)
+    #   -1.0 = mediocre (0.5)
+    #   -2.0 and below = garbage (0.0)
+    clarity_score = np.clip((w['avg_logprob'] + 2.0) / 1.8, 0.0, 1.0)
 
-    # ── 4. Voiced Frame Ratio ────────────────────────────────
-    # Check short frames for periodicity using autocorrelation
-    frame_len = min(int(0.03 * sr), T)  # 30ms frames
-    frame_hop = frame_len // 2
-    voiced_count = 0
-    total_frames = 0
+    # Invert no_speech_prob: 0.0 no_speech = 1.0 score
+    speech_score = 1.0 - w['no_speech_prob']
 
-    for start in range(0, T - frame_len, frame_hop):
-        frame = audio[start:start + frame_len]
-        frame_energy = np.sum(frame ** 2)
-        if frame_energy < 1e-10:
-            total_frames += 1
-            continue
-
-        # Autocorrelation (normalized)
-        frame = frame - frame.mean()
-        corr = np.correlate(frame, frame, mode='full')
-        corr = corr[len(corr) // 2:]  # Take positive lags only
-        corr = corr / (corr[0] + 1e-10)  # Normalize
-
-        # Look for peaks in the pitch range (80–400 Hz)
-        min_lag = max(1, int(sr / 400))  # 400 Hz
-        max_lag = min(len(corr) - 1, int(sr / 80))  # 80 Hz
-
-        if max_lag > min_lag:
-            search_region = corr[min_lag:max_lag + 1]
-            peak_val = np.max(search_region)
-            if peak_val > 0.3:  # Voiced threshold
-                voiced_count += 1
-
-        total_frames += 1
-
-    voiced_ratio = voiced_count / max(total_frames, 1)
-
-    # ── Combine Scores ───────────────────────────────────────
-    # Weighted combination: voiced ratio is the strongest indicator
-    weights = {
-        'rms': 0.15,
-        'centroid': 0.20,
-        'zcr': 0.15,
-        'voiced': 0.50,
-    }
+    # ── Combine ─────────────────────────────────────────
     confidence = (
-        weights['rms'] * rms_score +
-        weights['centroid'] * centroid_score +
-        weights['zcr'] * zcr_score +
-        weights['voiced'] * voiced_ratio
+        0.30 * vad_ratio +
+        0.50 * clarity_score +
+        0.20 * speech_score
     )
     confidence = float(np.clip(confidence, 0.0, 1.0))
 
     logger.info(
-        "Voice confidence: %.3f (rms=%.2f, centroid=%.2f[%.0fHz], zcr=%.2f, voiced=%.2f)",
-        confidence, rms_score, centroid_score, mean_centroid, zcr_score, voiced_ratio
+        "Voice confidence: %.3f (vad=%.2f, clarity=%.2f[logp=%.2f], speech=%.2f, words=%d, text='%s')",
+        confidence, vad_ratio, clarity_score, w['avg_logprob'],
+        speech_score, w['word_count'], w['text'][:80]
     )
     return round(confidence, 3)
 # ─────────────────────────────────────────────────────────────
