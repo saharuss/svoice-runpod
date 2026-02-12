@@ -1,7 +1,7 @@
 
 "use client";
 
-import { useState, useCallback } from "react";
+import { useState, useCallback, useRef, useEffect } from "react";
 import { useDropzone } from "react-dropzone";
 import axios from "axios";
 import {
@@ -18,12 +18,23 @@ import {
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 
+interface TimedWord {
+  text: string;
+  start: number;
+  end: number;
+}
+
+interface Transcription {
+  text: string;
+  words: TimedWord[];
+}
+
 interface Track {
   speaker: number;
   audio_base64: string;
   confidence: number;
   is_main: boolean;
-  transcription?: string;
+  transcription?: Transcription;
 }
 
 function ConfidenceBadge({ confidence }: { confidence: number }) {
@@ -40,6 +51,49 @@ function ConfidenceBadge({ confidence }: { confidence: number }) {
 }
 
 function TrackCard({ track }: { track: Track }) {
+  const audioRef = useRef<HTMLAudioElement>(null);
+  const animRef = useRef<number>(0);
+  const [currentTime, setCurrentTime] = useState(-1);
+  const [isPlaying, setIsPlaying] = useState(false);
+
+  const hasWords = track.transcription?.words && track.transcription.words.length > 0;
+
+  useEffect(() => {
+    const audio = audioRef.current;
+    if (!audio) return;
+
+    const onPlay = () => {
+      setIsPlaying(true);
+      const tick = () => {
+        setCurrentTime(audio.currentTime);
+        animRef.current = requestAnimationFrame(tick);
+      };
+      animRef.current = requestAnimationFrame(tick);
+    };
+
+    const onPause = () => {
+      setIsPlaying(false);
+      cancelAnimationFrame(animRef.current);
+    };
+
+    const onEnded = () => {
+      setIsPlaying(false);
+      setCurrentTime(-1);
+      cancelAnimationFrame(animRef.current);
+    };
+
+    audio.addEventListener("play", onPlay);
+    audio.addEventListener("pause", onPause);
+    audio.addEventListener("ended", onEnded);
+
+    return () => {
+      audio.removeEventListener("play", onPlay);
+      audio.removeEventListener("pause", onPause);
+      audio.removeEventListener("ended", onEnded);
+      cancelAnimationFrame(animRef.current);
+    };
+  }, []);
+
   return (
     <div className="glass p-4 rounded-xl space-y-3 group hover:bg-white/10 transition-colors">
       <div className="flex items-center justify-between gap-4">
@@ -64,6 +118,7 @@ function TrackCard({ track }: { track: Track }) {
         </div>
         <div className="flex items-center gap-3">
           <audio
+            ref={audioRef}
             controls
             src={`data:audio/wav;base64,${track.audio_base64}`}
             className="w-full max-w-[200px] h-10 opacity-80 hover:opacity-100 transition-opacity"
@@ -82,14 +137,51 @@ function TrackCard({ track }: { track: Track }) {
           </button>
         </div>
       </div>
-      {track.transcription && (
+      {hasWords && (
+        <div className="ml-14 p-3 rounded-lg bg-white/5 border border-white/10">
+          <div className="flex items-center gap-2 mb-2">
+            <FileText className="w-3.5 h-3.5 text-purple-400" />
+            <span className="text-xs font-medium text-purple-400/80">Transcription</span>
+          </div>
+          <p className="text-sm leading-relaxed flex flex-wrap gap-x-1.5 gap-y-1">
+            {track.transcription!.words.map((word, i) => {
+              const isActive = isPlaying && currentTime >= word.start && currentTime < word.end;
+              const isPast = isPlaying && currentTime >= word.end;
+              const isFuture = !isPlaying || currentTime < word.start;
+
+              return (
+                <span
+                  key={i}
+                  className={`
+                    inline-block rounded px-0.5 transition-all duration-150
+                    ${isActive
+                      ? "text-white font-semibold scale-110 bg-purple-500/30 shadow-[0_0_12px_rgba(168,85,247,0.4)]"
+                      : isPast
+                        ? "text-white/70"
+                        : "text-white/35"
+                    }
+                  `}
+                  style={{
+                    transform: isActive ? "scale(1.1)" : "scale(1)",
+                    transition: "all 0.15s ease-out",
+                  }}
+                >
+                  {word.text}
+                </span>
+              );
+            })}
+          </p>
+        </div>
+      )}
+      {/* Fallback: show plain text if words aren't available */}
+      {!hasWords && track.transcription?.text && (
         <div className="ml-14 p-3 rounded-lg bg-white/5 border border-white/10">
           <div className="flex items-center gap-2 mb-1.5">
             <FileText className="w-3.5 h-3.5 text-purple-400" />
             <span className="text-xs font-medium text-purple-400/80">Transcription</span>
           </div>
           <p className="text-sm text-white/70 leading-relaxed italic">
-            &ldquo;{track.transcription}&rdquo;
+            &ldquo;{track.transcription.text}&rdquo;
           </p>
         </div>
       )}

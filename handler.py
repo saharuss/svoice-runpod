@@ -413,19 +413,25 @@ def elevenlabs_voice_isolate(audio_np: np.ndarray, sr: int) -> np.ndarray:
         return audio_np
 
 
-def elevenlabs_transcribe(audio_np: np.ndarray, sr: int) -> str:
+def elevenlabs_transcribe(audio_np: np.ndarray, sr: int) -> dict:
     """
     Use ElevenLabs Speech-to-Text (Scribe v2) to transcribe audio.
 
-    Returns transcription text, or empty string on failure.
+    Returns dict with 'text' and 'words' (word-level timestamps).
+    Each word: {text: str, start: float, end: float}
     """
+    empty = {"text": "", "words": []}
     try:
         wav_bytes = audio_to_wav_bytes(audio_np, sr)
 
         resp = requests.post(
             f"{ELEVENLABS_BASE_URL}/speech-to-text",
             headers={"xi-api-key": ELEVENLABS_API_KEY},
-            data={"model_id": "scribe_v2", "language_code": "en"},
+            data={
+                "model_id": "scribe_v2",
+                "language_code": "en",
+                "timestamps_granularity": "word",
+            },
             files={"file": ("track.wav", wav_bytes, "audio/wav")},
             timeout=60,
         )
@@ -433,17 +439,29 @@ def elevenlabs_transcribe(audio_np: np.ndarray, sr: int) -> str:
         if resp.status_code != 200:
             logger.warning("ElevenLabs transcription failed (HTTP %d): %s",
                           resp.status_code, resp.text[:200])
-            return ""
+            return empty
 
         result = resp.json()
         text = result.get("text", "").strip()
-        logger.info("ElevenLabs transcription (%d words): '%s'",
-                    len(text.split()) if text else 0, text[:100])
-        return text
+
+        # Extract word-level timestamps
+        raw_words = result.get("words", [])
+        words = []
+        for w in raw_words:
+            if w.get("type") == "word" and w.get("text", "").strip():
+                words.append({
+                    "text": w["text"].strip(),
+                    "start": round(w.get("start", 0.0), 3),
+                    "end": round(w.get("end", 0.0), 3),
+                })
+
+        logger.info("ElevenLabs transcription (%d words, %d timed): '%s'",
+                    len(text.split()) if text else 0, len(words), text[:100])
+        return {"text": text, "words": words}
 
     except Exception as e:
         logger.warning("ElevenLabs transcription error: %s", e)
-        return ""
+        return empty
 
 
 # ─────────────────────────────────────────────────────────────
@@ -510,7 +528,7 @@ def handler(job):
             # Transcribe the enhanced audio
             track["transcription"] = elevenlabs_transcribe(enhanced, sample_rate)
         else:
-            track["transcription"] = ""
+            track["transcription"] = {"text": "", "words": []}
 
     # ── Encode audio and build response ──────────────────────
     result_tracks = []
