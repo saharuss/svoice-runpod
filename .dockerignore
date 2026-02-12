@@ -1,0 +1,13 @@
+.git
+.gitignore
+__pycache__
+*.pyc
+outputs/
+img/
+dataset/
+egs/
+*.md
+LICENSE
+CODE_OF_CONDUCT.md
+CONTRIBUTING.md
+model/Librimix7_checkpoint/

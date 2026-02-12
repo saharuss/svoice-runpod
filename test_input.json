@@ -1,0 +1,6 @@
+{
+    "input": {
+        "audio_url": "https://example.com/path/to/mixed_speakers.wav",
+        "sample_rate": 16000
+    }
+}

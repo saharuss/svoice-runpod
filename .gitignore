@@ -129,8 +129,17 @@ dmypy.json
 .pyre/
 
 models/
+model/
 *.th
 .DS_Store
 outputs/
 egs
 *.sh
+
+# Web app secrets
+.env.local
+.env*.local
+
+# Node
+node_modules/
+.next/
