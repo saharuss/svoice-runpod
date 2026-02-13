@@ -62,6 +62,7 @@ def get_metrics():
         "dataset_progress": "",
         "training_complete": False,
         "downloadable_files": [],
+        "watchdog": {"status": "off", "alerts": [], "auto_actions": [], "last_check": ""},
     }
 
     # GPU info
@@ -116,6 +117,15 @@ def get_metrics():
 
     # Downloadable files
     metrics["downloadable_files"] = get_downloadable_files()
+
+    # Watchdog alerts
+    try:
+        alerts_path = os.path.expanduser("~/watchdog_alerts.json")
+        if os.path.exists(alerts_path):
+            with open(alerts_path) as f:
+                metrics["watchdog"] = json.load(f)
+    except Exception:
+        pass
 
     # Trainer log tail
     try:

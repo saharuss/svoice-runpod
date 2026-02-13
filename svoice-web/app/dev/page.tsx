@@ -17,6 +17,8 @@ import {
     BarChart3,
     Download,
     CheckCircle2,
+    Shield,
+    AlertTriangle,
 } from "lucide-react";
 
 // ── VM Config ──
@@ -52,6 +54,12 @@ interface Metrics {
     dataset_progress: string;
     training_complete: boolean;
     downloadable_files: DownloadableFile[];
+    watchdog: {
+        status: string;
+        alerts: Array<{ time: string; level: string; message: string; action_taken?: string }>;
+        auto_actions: Array<{ time: string; level: string; message: string; action_taken?: string }>;
+        last_check: string;
+    };
 }
 
 function StatusDot({ status }: { status: string }) {
@@ -526,11 +534,75 @@ export default function DevDashboard() {
                     </div>
                 </div>
 
+                {/* Watchdog Alerts */}
+                {metrics?.watchdog?.alerts?.length ? (
+                    <div className="glass-card rounded-2xl p-5">
+                        <div className="flex items-center justify-between mb-3">
+                            <div className="flex items-center gap-2">
+                                <Shield className={`w-4 h-4 ${metrics?.watchdog?.status === "watching" || metrics?.watchdog?.status?.startsWith("watching")
+                                    ? "text-emerald-400"
+                                    : metrics?.watchdog?.status === "complete"
+                                        ? "text-violet-400"
+                                        : "text-white/40"
+                                    }`} />
+                                <h3 className="text-xs font-semibold text-white/40 uppercase tracking-widest">
+                                    🛡️ Watchdog
+                                </h3>
+                            </div>
+                            <div className="text-[10px] text-white/20">
+                                {metrics?.watchdog?.last_check && `Last check: ${metrics.watchdog.last_check.split(" ")[1] || metrics.watchdog.last_check}`}
+                            </div>
+                        </div>
+                        <div className="space-y-1.5 max-h-[180px] overflow-y-auto scrollbar-thin">
+                            {[...(metrics?.watchdog?.alerts ?? [])].reverse().slice(0, 10).map((alert, i) => (
+                                <div
+                                    key={i}
+                                    className={`flex items-start gap-2 p-2 rounded-lg text-[11px] ${alert.level === "critical"
+                                        ? "bg-red-500/10 border border-red-500/20"
+                                        : alert.level === "warning"
+                                            ? "bg-amber-500/10 border border-amber-500/20"
+                                            : alert.level === "action"
+                                                ? "bg-violet-500/10 border border-violet-500/20"
+                                                : "bg-white/[0.02] border border-white/[0.05]"
+                                        }`}
+                                >
+                                    {alert.level === "critical" ? (
+                                        <AlertTriangle className="w-3.5 h-3.5 text-red-400 mt-0.5 shrink-0" />
+                                    ) : alert.level === "warning" ? (
+                                        <AlertTriangle className="w-3.5 h-3.5 text-amber-400 mt-0.5 shrink-0" />
+                                    ) : alert.level === "action" ? (
+                                        <Zap className="w-3.5 h-3.5 text-violet-400 mt-0.5 shrink-0" />
+                                    ) : (
+                                        <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400/60 mt-0.5 shrink-0" />
+                                    )}
+                                    <div className="min-w-0">
+                                        <div className={`${alert.level === "critical" ? "text-red-300" :
+                                            alert.level === "warning" ? "text-amber-300" :
+                                                alert.level === "action" ? "text-violet-300" :
+                                                    "text-white/50"
+                                            }`}>
+                                            {alert.message}
+                                        </div>
+                                        {alert.action_taken && (
+                                            <div className="text-[10px] text-white/30 mt-0.5">
+                                                → {alert.action_taken}
+                                            </div>
+                                        )}
+                                        <div className="text-[9px] text-white/15 mt-0.5">
+                                            {alert.time}
+                                        </div>
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+                ) : null}
+
                 {/* Download Section */}
                 {(metrics?.downloadable_files?.length ?? 0) > 0 && (
                     <div className={`glass-card rounded-2xl p-6 ${metrics?.training_complete
-                            ? "ring-1 ring-emerald-500/30 bg-gradient-to-br from-emerald-500/[0.04] to-transparent"
-                            : ""
+                        ? "ring-1 ring-emerald-500/30 bg-gradient-to-br from-emerald-500/[0.04] to-transparent"
+                        : ""
                         }`}>
                         <div className="flex items-center gap-3 mb-4">
                             {metrics?.training_complete ? (
@@ -561,16 +633,16 @@ export default function DevDashboard() {
                                 >
                                     <div className="flex items-center gap-3">
                                         <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${file.name === "best.th"
-                                                ? "bg-emerald-500/20"
-                                                : file.name === "checkpoint.th"
-                                                    ? "bg-violet-500/20"
-                                                    : "bg-blue-500/20"
+                                            ? "bg-emerald-500/20"
+                                            : file.name === "checkpoint.th"
+                                                ? "bg-violet-500/20"
+                                                : "bg-blue-500/20"
                                             }`}>
                                             <Download className={`w-3.5 h-3.5 ${file.name === "best.th"
-                                                    ? "text-emerald-400"
-                                                    : file.name === "checkpoint.th"
-                                                        ? "text-violet-400"
-                                                        : "text-blue-400"
+                                                ? "text-emerald-400"
+                                                : file.name === "checkpoint.th"
+                                                    ? "text-violet-400"
+                                                    : "text-blue-400"
                                                 }`} />
                                         </div>
                                         <div>
