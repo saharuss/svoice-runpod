@@ -18,7 +18,7 @@ export async function POST(req: NextRequest) {
 
     try {
         const body = await req.json();
-        const { audio_base64, sample_rate, target_audio_base64 } = body;
+        const { audio_base64, sample_rate, identities } = body;
 
         if (!audio_base64) {
             return NextResponse.json(
@@ -36,8 +36,8 @@ export async function POST(req: NextRequest) {
             audio_base64,
             sample_rate: sample_rate || 16000,
         };
-        if (target_audio_base64) {
-            input.target_audio_base64 = target_audio_base64;
+        if (identities && identities.length > 0) {
+            input.identities = identities;
         }
 
         const response = await axios.post(

@@ -22,8 +22,10 @@ import {
   Users,
   Headphones,
   UserCheck,
-  Target,
   X,
+  Plus,
+  PanelRightOpen,
+  PanelRightClose,
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 
@@ -46,11 +48,15 @@ interface Track {
   transcription?: Transcription;
 }
 
-interface SpeakerMatch {
-  matched_index: number;
-  matched_speaker: number;
+interface VoiceIdentity {
+  id: string;
+  name: string;
+  file: File | null;
+}
+
+interface IdentityMatch {
+  name: string;
   similarity: number;
-  all_similarities: number[];
 }
 
 // ── Sample data ──────────────────────────────────────────────
@@ -222,7 +228,7 @@ function SampleCard({
 }
 
 // ── Track Card ───────────────────────────────────────────────
-function TrackCard({ track }: { track: Track }) {
+function TrackCard({ track, identityMatch }: { track: Track; identityMatch?: IdentityMatch }) {
   const audioRef = useRef<HTMLAudioElement>(null);
   const progressRef = useRef<HTMLDivElement>(null);
   const animRef = useRef<number>(0);
@@ -318,6 +324,12 @@ function TrackCard({ track }: { track: Track }) {
                 Speaker {track.speaker}
               </p>
               <ConfidenceBadge confidence={track.confidence} />
+              {identityMatch && (
+                <span className="text-xs font-medium px-2.5 py-0.5 rounded-full bg-amber-500/15 text-amber-300 border border-amber-500/20 flex items-center gap-1">
+                  <UserCheck className="w-3 h-3" />
+                  {identityMatch.name} • {Math.round(identityMatch.similarity * 100)}%
+                </span>
+              )}
             </div>
             <p className="text-xs text-white/40">
               {track.is_main ? "Main Voice • Enhanced" : "Background / Noise"}
@@ -458,11 +470,11 @@ export default function Home() {
   const [error, setError] = useState<string | null>(null);
   const [showOtherTracks, setShowOtherTracks] = useState(false);
   const [shimmer, setShimmer] = useState(false);
-  const [targetFile, setTargetFile] = useState<File | null>(null);
-  const [speakerMatch, setSpeakerMatch] = useState<SpeakerMatch | null>(null);
+  const [identities, setIdentities] = useState<VoiceIdentity[]>([]);
+  const [identityMatches, setIdentityMatches] = useState<Record<string, IdentityMatch>>({});
+  const [sidebarOpen, setSidebarOpen] = useState(false);
   const samplesRef = useRef<HTMLDivElement>(null);
   const heroRef = useRef<HTMLElement>(null);
-  const targetInputRef = useRef<HTMLInputElement>(null);
 
   const onDrop = useCallback((acceptedFiles: File[]) => {
     if (acceptedFiles?.length > 0) {
@@ -470,7 +482,7 @@ export default function Home() {
       setTracks(null);
       setError(null);
       setShowOtherTracks(false);
-      setSpeakerMatch(null);
+      setIdentityMatches({});
     }
   }, []);
 
@@ -518,7 +530,7 @@ export default function Home() {
     setIsProcessing(true);
     setError(null);
     setShowOtherTracks(false);
-    setSpeakerMatch(null);
+    setIdentityMatches({});
 
     try {
       const reader = new FileReader();
@@ -526,22 +538,29 @@ export default function Home() {
       reader.onload = async () => {
         const base64String = (reader.result as string).split(",")[1];
 
-        // Read target speaker file if provided
-        let targetBase64: string | undefined;
-        if (targetFile) {
-          targetBase64 = await new Promise<string>((resolve, reject) => {
-            const tr = new FileReader();
-            tr.readAsDataURL(targetFile);
-            tr.onload = () => resolve((tr.result as string).split(",")[1]);
-            tr.onerror = () => reject(tr.error);
-          });
+        // Read all identity audio files as base64
+        const identityPayloads: { name: string; audio_base64: string }[] = [];
+        for (const ident of identities) {
+          if (ident.file) {
+            try {
+              const b64 = await new Promise<string>((resolve, reject) => {
+                const tr = new FileReader();
+                tr.readAsDataURL(ident.file!);
+                tr.onload = () => resolve((tr.result as string).split(",")[1]);
+                tr.onerror = () => reject(tr.error);
+              });
+              identityPayloads.push({ name: ident.name, audio_base64: b64 });
+            } catch (e) {
+              console.warn(`Failed to read identity '${ident.name}':`, e);
+            }
+          }
         }
 
         try {
           const submitResponse = await axios.post("/api/separate", {
             audio_base64: base64String,
             sample_rate: 16000,
-            ...(targetBase64 ? { target_audio_base64: targetBase64 } : {}),
+            ...(identityPayloads.length > 0 ? { identities: identityPayloads } : {}),
           });
 
           const jobId = submitResponse.data.id;
@@ -567,8 +586,8 @@ export default function Home() {
               if (status === "COMPLETED") {
                 if (output && output.separated_tracks) {
                   setTracks(output.separated_tracks);
-                  if (output.speaker_match) {
-                    setSpeakerMatch(output.speaker_match);
+                  if (output.identity_matches) {
+                    setIdentityMatches(output.identity_matches);
                   }
                   setIsProcessing(false);
                 } else {
@@ -651,8 +670,7 @@ export default function Home() {
                   setTracks(null);
                   setError(null);
                   setShowOtherTracks(false);
-                  setTargetFile(null);
-                  setSpeakerMatch(null);
+                  setIdentityMatches({});
                   heroRef.current?.scrollIntoView({ behavior: "smooth" });
                 }}
                 className="text-5xl font-bold tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-blue-400 to-purple-400 cursor-pointer hover:opacity-80 transition-opacity"
@@ -699,57 +717,6 @@ export default function Home() {
                     </p>
                   </div>
                 </div>
-              </div>
-
-              {/* Target Speaker Upload (optional) */}
-              <div className="space-y-2">
-                <input
-                  ref={targetInputRef}
-                  type="file"
-                  accept="audio/*"
-                  className="hidden"
-                  onChange={(e) => {
-                    if (e.target.files?.[0]) {
-                      setTargetFile(e.target.files[0]);
-                    }
-                  }}
-                />
-                {targetFile ? (
-                  <div className="glass rounded-xl px-4 py-3 flex items-center justify-between border border-amber-500/30 bg-amber-500/5">
-                    <div className="flex items-center gap-3">
-                      <div className="p-2 bg-amber-500/10 rounded-lg">
-                        <Target className="w-4 h-4 text-amber-400" />
-                      </div>
-                      <div>
-                        <p className="text-sm font-medium text-white/80">{targetFile.name}</p>
-                        <p className="text-xs text-white/40">Target speaker reference</p>
-                      </div>
-                    </div>
-                    <button
-                      onClick={() => setTargetFile(null)}
-                      className="p-1.5 rounded-lg hover:bg-white/10 transition-colors"
-                    >
-                      <X className="w-4 h-4 text-white/40" />
-                    </button>
-                  </div>
-                ) : (
-                  <button
-                    onClick={() => targetInputRef.current?.click()}
-                    className="w-full glass rounded-xl px-4 py-3 flex items-center gap-3 border border-dashed border-white/10 hover:border-amber-500/30 hover:bg-amber-500/5 transition-all duration-300 group"
-                  >
-                    <div className="p-2 bg-white/5 rounded-lg group-hover:bg-amber-500/10 transition-colors">
-                      <Target className="w-4 h-4 text-white/30 group-hover:text-amber-400 transition-colors" />
-                    </div>
-                    <div className="text-left">
-                      <p className="text-sm font-medium text-white/50 group-hover:text-white/70 transition-colors">
-                        Match Target Speaker
-                      </p>
-                      <p className="text-xs text-white/30">
-                        Optional • Upload a reference audio to find a matching voice
-                      </p>
-                    </div>
-                  </button>
-                )}
               </div>
 
               <div className="flex justify-center">
@@ -799,28 +766,6 @@ export default function Home() {
                   animate={{ opacity: 1, y: 0 }}
                   className="space-y-8"
                 >
-                  {/* Matched Person Section */}
-                  {speakerMatch && tracks && (
-                    <div className="space-y-4">
-                      <div className="flex items-center gap-3 pl-2 border-l-4 border-amber-500">
-                        <UserCheck className="w-5 h-5 text-amber-400" />
-                        <h2 className="text-2xl font-semibold text-white/90">
-                          Matched Person
-                        </h2>
-                        <span className="text-xs font-mono px-2.5 py-1 rounded-full bg-amber-500/15 text-amber-300 border border-amber-500/20">
-                          {Math.round(speakerMatch.similarity * 100)}% match
-                        </span>
-                      </div>
-                      <div className="relative">
-                        <div className="absolute -inset-0.5 bg-gradient-to-r from-amber-500/20 to-yellow-500/20 rounded-2xl blur-sm" />
-                        <div className="relative">
-                          <TrackCard
-                            track={tracks[speakerMatch.matched_index]}
-                          />
-                        </div>
-                      </div>
-                    </div>
-                  )}
 
                   {mainTracks.length > 0 && (
                     <div className="space-y-4">
@@ -834,8 +779,8 @@ export default function Home() {
                         </span>
                       </div>
                       <div className="grid gap-3">
-                        {mainTracks.map((track) => (
-                          <TrackCard key={track.speaker} track={track} />
+                        {mainTracks.map((track, idx) => (
+                          <TrackCard key={track.speaker} track={track} identityMatch={identityMatches[String(cappedTracks.indexOf(track))]} />
                         ))}
                       </div>
                     </div>
@@ -874,6 +819,7 @@ export default function Home() {
                               <TrackCard
                                 key={track.speaker}
                                 track={track}
+                                identityMatch={identityMatches[String(cappedTracks.indexOf(track))]}
                               />
                             ))}
                           </motion.div>
@@ -909,6 +855,128 @@ export default function Home() {
           </button>
         )}
       </section>
+
+      {/* ── Voice Identities Sidebar ── */}
+      <AnimatePresence>
+        {sidebarOpen && (
+          <motion.div
+            initial={{ x: 320, opacity: 0 }}
+            animate={{ x: 0, opacity: 1 }}
+            exit={{ x: 320, opacity: 0 }}
+            transition={{ type: "spring", damping: 25, stiffness: 300 }}
+            className="fixed right-0 top-0 bottom-0 w-80 glass border-l border-white/10 z-50 flex flex-col"
+          >
+            <div className="flex items-center justify-between p-4 border-b border-white/10">
+              <div className="flex items-center gap-2">
+                <Users className="w-5 h-5 text-amber-400" />
+                <h3 className="font-semibold text-white/90">Voice Identities</h3>
+              </div>
+              <button onClick={() => setSidebarOpen(false)} className="p-1.5 rounded-lg hover:bg-white/10 transition-colors">
+                <PanelRightClose className="w-4 h-4 text-white/50" />
+              </button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto p-4 space-y-3">
+              {identities.length === 0 && (
+                <p className="text-sm text-white/30 text-center py-8">No identities added yet. Add a voice identity to tag separated tracks.</p>
+              )}
+              {identities.map((ident) => (
+                <div key={ident.id} className="glass rounded-xl p-3 border border-white/10 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <div className="w-8 h-8 rounded-full bg-amber-500/20 flex items-center justify-center text-amber-300 text-sm font-bold">
+                        {ident.name.charAt(0).toUpperCase()}
+                      </div>
+                      <div>
+                        <p className="text-sm font-medium text-white/80">{ident.name}</p>
+                        <p className="text-xs text-white/30">
+                          {ident.file ? ident.file.name : "No audio file"}
+                        </p>
+                      </div>
+                    </div>
+                    <button
+                      onClick={() => setIdentities(prev => prev.filter(i => i.id !== ident.id))}
+                      className="p-1 rounded-lg hover:bg-white/10 transition-colors"
+                    >
+                      <X className="w-3.5 h-3.5 text-white/30" />
+                    </button>
+                  </div>
+                  {!ident.file && (
+                    <label className="block">
+                      <input
+                        type="file"
+                        accept="audio/*"
+                        className="hidden"
+                        onChange={(e) => {
+                          if (e.target.files?.[0]) {
+                            const f = e.target.files[0];
+                            setIdentities(prev => prev.map(i => i.id === ident.id ? { ...i, file: f } : i));
+                          }
+                        }}
+                      />
+                      <span className="text-xs text-amber-400/70 hover:text-amber-400 cursor-pointer transition-colors">+ Upload audio</span>
+                    </label>
+                  )}
+                </div>
+              ))}
+            </div>
+
+            {/* Add identity form */}
+            <div className="p-4 border-t border-white/10">
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  const form = e.target as HTMLFormElement;
+                  const nameInput = form.elements.namedItem("identityName") as HTMLInputElement;
+                  const fileInput = form.elements.namedItem("identityFile") as HTMLInputElement;
+                  const name = nameInput.value.trim();
+                  if (!name) return;
+                  const file = fileInput.files?.[0] || null;
+                  setIdentities(prev => [...prev, { id: crypto.randomUUID(), name, file }]);
+                  nameInput.value = "";
+                  fileInput.value = "";
+                }}
+                className="space-y-3"
+              >
+                <input
+                  name="identityName"
+                  type="text"
+                  placeholder="Name (e.g. Mom, Dad)"
+                  className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-white/80 placeholder-white/30 focus:outline-none focus:border-amber-500/50 transition-colors"
+                />
+                <input
+                  name="identityFile"
+                  type="file"
+                  accept="audio/*"
+                  className="w-full text-xs text-white/40 file:mr-2 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-medium file:bg-white/10 file:text-white/60 hover:file:bg-white/20 file:cursor-pointer file:transition-colors"
+                />
+                <button
+                  type="submit"
+                  className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg bg-amber-500/20 text-amber-300 text-sm font-medium hover:bg-amber-500/30 transition-colors"
+                >
+                  <Plus className="w-4 h-4" />
+                  Add Identity
+                </button>
+              </form>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Sidebar toggle button */}
+      <button
+        onClick={() => setSidebarOpen(!sidebarOpen)}
+        className="fixed right-4 top-4 z-40 glass px-3 py-2 rounded-full flex items-center gap-2 border border-white/10 hover:border-amber-500/30 hover:bg-amber-500/5 transition-all duration-300 group"
+      >
+        {sidebarOpen ? (
+          <PanelRightClose className="w-4 h-4 text-white/50 group-hover:text-amber-400 transition-colors" />
+        ) : (
+          <PanelRightOpen className="w-4 h-4 text-white/50 group-hover:text-amber-400 transition-colors" />
+        )}
+        <span className="text-xs font-medium text-white/50 group-hover:text-white/70 transition-colors">
+          Identities{identities.length > 0 ? ` (${identities.length})` : ""}
+        </span>
+      </button>
 
       {/* ── Section 2: Samples (only on homepage) ── */}
       {!tracks && (

@@ -542,7 +542,7 @@ def handler(job):
     # ── Validate input ───────────────────────────────────────
     audio_b64 = job_input.get("audio_base64")
     audio_url = job_input.get("audio_url")
-    target_b64 = job_input.get("target_audio_base64")  # optional target speaker
+    identities = job_input.get("identities", [])  # [{name, audio_base64}]
     if not audio_b64 and not audio_url:
         return {"error": "Provide either 'audio_base64' or 'audio_url' in input."}
 
@@ -597,28 +597,52 @@ def handler(job):
         else:
             track["transcription"] = {"text": "", "words": []}
 
-    # ── Speaker matching (optional) ────────────────────────────
-    speaker_match = None
-    if target_b64:
+    # ── Identity matching (optional) ──────────────────────────
+    # Match each track against all provided voice identities.
+    # For each track, find the best-matching identity above threshold.
+    IDENTITY_MATCH_THRESHOLD = 0.25
+    identity_matches = {}  # {track_index: {name, similarity}}
+
+    if identities:
         try:
-            target_audio = decode_audio(target_b64, sample_rate)
-            logger.info("Target speaker audio loaded: %.2f sec", len(target_audio) / sample_rate)
-            target_emb = extract_speaker_embedding(target_audio, sample_rate)
-            if target_emb is not None:
-                track_embs = [extract_speaker_embedding(t["audio_np"], sample_rate) for t in tracks]
-                best_idx, best_sim, all_sims = match_speaker(target_emb, track_embs)
-                speaker_match = {
-                    "matched_index": best_idx,
-                    "matched_speaker": tracks[best_idx]["speaker"],
-                    "similarity": round(best_sim, 4),
-                    "all_similarities": [round(s, 4) for s in all_sims],
-                }
-                logger.info("Speaker match: track %d (similarity=%.4f)",
-                            tracks[best_idx]["speaker"], best_sim)
-            else:
-                logger.warning("Could not extract target speaker embedding")
+            # Extract embeddings for all tracks
+            track_embs = [extract_speaker_embedding(t["audio_np"], sample_rate) for t in tracks]
+
+            # Extract embeddings for all identities
+            identity_embs = []
+            for ident in identities:
+                try:
+                    ident_audio = decode_audio(ident["audio_base64"], sample_rate)
+                    emb = extract_speaker_embedding(ident_audio, sample_rate)
+                    identity_embs.append((ident["name"], emb))
+                    logger.info("Identity '%s' embedding extracted", ident["name"])
+                except Exception as e:
+                    logger.warning("Failed to process identity '%s': %s", ident.get("name", "?"), e)
+                    identity_embs.append((ident.get("name", "?"), None))
+
+            # For each track, find best-matching identity
+            for t_idx, t_emb in enumerate(track_embs):
+                if t_emb is None:
+                    continue
+                best_name = None
+                best_sim = 0.0
+                for i_name, i_emb in identity_embs:
+                    if i_emb is None:
+                        continue
+                    sim = float(np.dot(t_emb, i_emb))
+                    if sim > best_sim:
+                        best_sim = sim
+                        best_name = i_name
+                if best_name and best_sim >= IDENTITY_MATCH_THRESHOLD:
+                    identity_matches[str(t_idx)] = {
+                        "name": best_name,
+                        "similarity": round(best_sim, 4),
+                    }
+                    logger.info("Track %d matched identity '%s' (%.4f)",
+                                t_idx, best_name, best_sim)
+
         except Exception as e:
-            logger.warning("Speaker matching failed: %s", e)
+            logger.warning("Identity matching failed: %s", e)
 
     # ── Encode audio and build response ──────────────────────
     result_tracks = []
@@ -639,8 +663,8 @@ def handler(job):
         "num_speakers": num_speakers,
         "main_voices": main_count,
     }
-    if speaker_match:
-        result["speaker_match"] = speaker_match
+    if identity_matches:
+        result["identity_matches"] = identity_matches
     return result
 
 
