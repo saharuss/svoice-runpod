@@ -130,19 +130,38 @@ def get_metrics():
     # Dataset generation progress (if no training yet)
     if metrics["current_epoch"] == 0:
         try:
-            log_path = os.path.expanduser("~/dataset_gen.log")
-            if os.path.exists(log_path):
+            # Prefer upgrade.log (10-speaker gen), fall back to dataset_gen.log
+            log_candidates = [
+                os.path.expanduser("~/upgrade.log"),
+                os.path.expanduser("~/dataset_gen.log"),
+            ]
+            log_path = None
+            for candidate in log_candidates:
+                if os.path.exists(candidate) and os.path.getsize(candidate) > 0:
+                    log_path = candidate
+                    break
+
+            if log_path:
                 with open(log_path) as f:
                     lines = f.readlines()
-                    tail = [l.strip() for l in lines[-5:] if l.strip()]
-                    metrics["log_tail"] = tail
-                    # Parse percentage from wget-style output
+                    tail = [l.strip() for l in lines[-10:] if l.strip()]
+                    metrics["log_tail"] = tail[-5:]
+                    # Parse tqdm-style progress: "2%|▏  | 309/20000 [53:38<55:42:02, 10.18s/it]"
+                    import re
                     for line in reversed(tail):
+                        m = re.search(r'(\d+)%\|.*?\|\s*(\d+)/(\d+)\s*\[([^<]+)<([^,]+),\s*([^\]]+)\]', line)
+                        if m:
+                            pct, current, total = m.group(1), m.group(2), m.group(3)
+                            elapsed, remaining, rate = m.group(4), m.group(5), m.group(6)
+                            metrics["dataset_progress"] = f"{current}/{total}"
+                            metrics["status"] = f"generating dataset ({pct}% — {current}/{total}, ETA {remaining})"
+                            break
+                        # Also check for wget-style percentage
                         parts = line.split()
                         for p in parts:
                             if p.endswith('%') and p[:-1].isdigit():
                                 metrics["dataset_progress"] = p
-                                metrics["status"] = f"downloading dataset ({p})"
+                                metrics["status"] = f"downloading ({p})"
                                 break
                         if metrics["dataset_progress"]:
                             break
