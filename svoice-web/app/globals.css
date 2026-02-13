@@ -13,10 +13,16 @@
 }
 
 @layer base {
+  html {
+    overscroll-behavior: none;
+    scroll-behavior: smooth;
+  }
+
   body {
     background: radial-gradient(circle at 50% 0%, #1a1a2e 0%, #0f0f1a 100%);
     color: var(--foreground);
     min-height: 100vh;
+    overscroll-behavior: none;
   }
 }
 
@@ -27,5 +33,42 @@
 
   .glass-hover {
     @apply hover:bg-white/10 transition-colors duration-300;
+  }
+
+  .snap-container {
+    scroll-snap-type: y mandatory;
+    overflow-y: auto;
+    height: 100vh;
+  }
+
+  .snap-section {
+    scroll-snap-align: start;
+    min-height: 100vh;
+  }
+
+  .animate-shimmer {
+    animation: shimmer-pulse 1.5s ease-out;
+  }
+}
+
+@keyframes shimmer-pulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(168, 85, 247, 0.6);
+    border-color: rgba(168, 85, 247, 0.8);
+  }
+
+  25% {
+    box-shadow: 0 0 30px 8px rgba(168, 85, 247, 0.4);
+    border-color: rgba(168, 85, 247, 0.6);
+  }
+
+  50% {
+    box-shadow: 0 0 15px 4px rgba(168, 85, 247, 0.25);
+    border-color: rgba(168, 85, 247, 0.4);
+  }
+
+  100% {
+    box-shadow: 0 0 0 0 rgba(168, 85, 247, 0);
+    border-color: rgba(255, 255, 255, 0.05);
   }
 }
