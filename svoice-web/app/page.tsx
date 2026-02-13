@@ -66,6 +66,44 @@ const SAMPLES = [
   { file: "/samples/5people.wav", label: "5 Speakers", speakers: 5, duration: "7s" },
   { file: "/samples/7people.wav", label: "7 Speakers", speakers: 7, duration: "10s" },
 ];
+// ── Identity Audio Player ────────────────────────────────────
+function IdentityAudioPlayer({ file }: { file: File }) {
+  const audioRef = useRef<HTMLAudioElement>(null);
+  const [playing, setPlaying] = useState(false);
+  const urlRef = useRef<string | null>(null);
+
+  // Create a stable object URL
+  useEffect(() => {
+    urlRef.current = URL.createObjectURL(file);
+    return () => { if (urlRef.current) URL.revokeObjectURL(urlRef.current); };
+  }, [file]);
+
+  const toggle = () => {
+    const audio = audioRef.current;
+    if (!audio) return;
+    if (playing) { audio.pause(); } else { audio.play(); }
+  };
+
+  return (
+    <div className="flex items-center gap-2 bg-white/5 rounded-lg px-2 py-1.5">
+      <audio
+        ref={audioRef}
+        src={urlRef.current ?? undefined}
+        preload="metadata"
+        onPlay={() => setPlaying(true)}
+        onPause={() => setPlaying(false)}
+        onEnded={() => { setPlaying(false); if (audioRef.current) audioRef.current.currentTime = 0; }}
+      />
+      <button
+        onClick={toggle}
+        className="p-1.5 rounded-full bg-amber-500/20 hover:bg-amber-500/30 transition-colors text-amber-300 flex items-center justify-center shrink-0"
+      >
+        {playing ? <Pause className="w-3 h-3" /> : <Play className="w-3 h-3" />}
+      </button>
+      <span className="text-xs text-white/40 truncate">{file.name}</span>
+    </div>
+  );
+}
 
 function ConfidenceBadge({ confidence }: { confidence: number }) {
   const pct = Math.round(confidence * 100);
@@ -714,9 +752,18 @@ export default function Home() {
                     <p className="text-sm text-white/40">
                       {file
                         ? `${(file.size / 1024 / 1024).toFixed(2)} MB`
-                        : "WAV, MP3, FLAC • Max 20MB"}
+                        : "WAV, MP3, M4A, FLAC • Max 20MB"}
                     </p>
                   </div>
+                  {file && (
+                    <div
+                      className="mt-2"
+                      onClick={(e) => e.stopPropagation()}
+                      onKeyDown={(e) => e.stopPropagation()}
+                    >
+                      <IdentityAudioPlayer file={file} />
+                    </div>
+                  )}
                 </div>
               </div>
 
@@ -902,6 +949,7 @@ export default function Home() {
                       <X className="w-3.5 h-3.5 text-white/30" />
                     </button>
                   </div>
+                  {ident.file && <IdentityAudioPlayer file={ident.file} />}
                   {!ident.file && (
                     <label className="block">
                       <input
