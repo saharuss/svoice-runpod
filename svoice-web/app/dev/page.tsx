@@ -18,8 +18,8 @@ import {
 } from "lucide-react";
 
 // ── VM Config ──
-const VM_IP = "34.46.141.38";
-const METRICS_URL = `http://${VM_IP}:8080/api/metrics`;
+// Uses /api/metrics proxy route (avoids mixed-content HTTPS→HTTP on Vercel)
+const METRICS_URL = `/api/metrics`;
 const POLL_INTERVAL = 10_000;
 const SPOT_PRICE = 0.22;
 
@@ -497,12 +497,12 @@ export default function DevDashboard() {
                             <div
                                 key={i}
                                 className={`font-mono text-[11px] leading-relaxed ${line.includes("epoch") || line.includes("loss")
-                                        ? "text-violet-400/80"
-                                        : line.includes("ERROR") || line.includes("error")
-                                            ? "text-red-400/80"
-                                            : line.includes("WARNING")
-                                                ? "text-amber-400/80"
-                                                : "text-white/30"
+                                    ? "text-violet-400/80"
+                                    : line.includes("ERROR") || line.includes("error")
+                                        ? "text-red-400/80"
+                                        : line.includes("WARNING")
+                                            ? "text-amber-400/80"
+                                            : "text-white/30"
                                     }`}
                             >
                                 {line}
