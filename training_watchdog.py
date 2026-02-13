@@ -31,7 +31,12 @@ CHECKPOINT_GLOB = os.path.expanduser("~/svoice_demo/outputs/exp_*/checkpoint.th"
 BEST_GLOB = os.path.expanduser("~/svoice_demo/outputs/exp_*/best.th")
 ALERTS_FILE = os.path.expanduser("~/watchdog_alerts.json")
 WATCHDOG_LOG = os.path.expanduser("~/watchdog.log")
-TRAIN_CMD = "cd ~/svoice_demo && python train.py"
+TRAIN_CMD = ("cd ~/svoice_demo && python train.py "
+             "sample_rate=16000 "
+             "swave.N=256 swave.H=256 swave.R=10 swave.C=10 "
+             "epochs=200 lr=3e-4 "
+             "lr_sched=plateau plateau.factor=0.5 plateau.patience=5 "
+             "eval_every=5 batch_size=2 num_workers=6 checkpoint=True")
 
 # Thresholds
 PLATEAU_EPOCHS = 30       # epochs without improvement before LR reduction
@@ -201,7 +206,7 @@ def restart_training(alerts_data, reason):
         time.sleep(5)
         # Restart training in background
         subprocess.Popen(
-            f"cd ~/svoice_demo && nohup python train.py > ~/train_output.log 2>&1 &",
+            f"nohup {TRAIN_CMD} > ~/train_output.log 2>&1 &",
             shell=True
         )
         log("Training restarted successfully")
