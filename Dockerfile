@@ -35,7 +35,9 @@ RUN pip install --no-cache-dir \
     hydra-core==1.3.2 \
     omegaconf==2.3.0 \
     runpod==1.6.2 \
-    requests==2.31.0
+    requests==2.31.0 \
+    speechbrain==1.0.0 \
+    huggingface_hub
 
 # ── Whisper for AI-powered voice scoring ────────────────────
 RUN pip install --no-cache-dir "setuptools<71" && \
@@ -43,6 +45,10 @@ RUN pip install --no-cache-dir "setuptools<71" && \
 
 # ── Pre-download Whisper tiny model (avoids network on cold start) ──
 RUN python -c "import whisper; whisper.load_model('tiny')"
+
+# ── Pre-download ECAPA-TDNN model (avoids cold-start download) ──
+RUN mkdir -p /app/models/ecapa && \
+    python -c "from speechbrain.inference.speaker import EncoderClassifier; EncoderClassifier.from_hparams(source='speechbrain/spkrec-ecapa-voxceleb', savedir='/app/models/ecapa')"
 
 # ── Copy application code ───────────────────────────────────
 WORKDIR /app

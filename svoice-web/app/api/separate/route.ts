@@ -18,7 +18,7 @@ export async function POST(req: NextRequest) {
 
     try {
         const body = await req.json();
-        const { audio_base64, sample_rate } = body;
+        const { audio_base64, sample_rate, target_audio_base64 } = body;
 
         if (!audio_base64) {
             return NextResponse.json(
@@ -32,14 +32,17 @@ export async function POST(req: NextRequest) {
 
         console.log(`Submitting job to RunPod: ${url}`);
 
+        const input: any = {
+            audio_base64,
+            sample_rate: sample_rate || 16000,
+        };
+        if (target_audio_base64) {
+            input.target_audio_base64 = target_audio_base64;
+        }
+
         const response = await axios.post(
             url,
-            {
-                input: {
-                    audio_base64,
-                    sample_rate: sample_rate || 16000,
-                },
-            },
+            { input },
             {
                 headers: {
                     Authorization: `Bearer ${RUNPOD_API_KEY}`,

@@ -21,6 +21,9 @@ import {
   Volume2,
   Users,
   Headphones,
+  UserCheck,
+  Target,
+  X,
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 
@@ -41,6 +44,13 @@ interface Track {
   confidence: number;
   is_main: boolean;
   transcription?: Transcription;
+}
+
+interface SpeakerMatch {
+  matched_index: number;
+  matched_speaker: number;
+  similarity: number;
+  all_similarities: number[];
 }
 
 // ── Sample data ──────────────────────────────────────────────
@@ -448,8 +458,11 @@ export default function Home() {
   const [error, setError] = useState<string | null>(null);
   const [showOtherTracks, setShowOtherTracks] = useState(false);
   const [shimmer, setShimmer] = useState(false);
+  const [targetFile, setTargetFile] = useState<File | null>(null);
+  const [speakerMatch, setSpeakerMatch] = useState<SpeakerMatch | null>(null);
   const samplesRef = useRef<HTMLDivElement>(null);
   const heroRef = useRef<HTMLElement>(null);
+  const targetInputRef = useRef<HTMLInputElement>(null);
 
   const onDrop = useCallback((acceptedFiles: File[]) => {
     if (acceptedFiles?.length > 0) {
@@ -457,6 +470,7 @@ export default function Home() {
       setTracks(null);
       setError(null);
       setShowOtherTracks(false);
+      setSpeakerMatch(null);
     }
   }, []);
 
@@ -504,6 +518,7 @@ export default function Home() {
     setIsProcessing(true);
     setError(null);
     setShowOtherTracks(false);
+    setSpeakerMatch(null);
 
     try {
       const reader = new FileReader();
@@ -511,10 +526,22 @@ export default function Home() {
       reader.onload = async () => {
         const base64String = (reader.result as string).split(",")[1];
 
+        // Read target speaker file if provided
+        let targetBase64: string | undefined;
+        if (targetFile) {
+          targetBase64 = await new Promise<string>((resolve, reject) => {
+            const tr = new FileReader();
+            tr.readAsDataURL(targetFile);
+            tr.onload = () => resolve((tr.result as string).split(",")[1]);
+            tr.onerror = () => reject(tr.error);
+          });
+        }
+
         try {
           const submitResponse = await axios.post("/api/separate", {
             audio_base64: base64String,
             sample_rate: 16000,
+            ...(targetBase64 ? { target_audio_base64: targetBase64 } : {}),
           });
 
           const jobId = submitResponse.data.id;
@@ -540,6 +567,9 @@ export default function Home() {
               if (status === "COMPLETED") {
                 if (output && output.separated_tracks) {
                   setTracks(output.separated_tracks);
+                  if (output.speaker_match) {
+                    setSpeakerMatch(output.speaker_match);
+                  }
                   setIsProcessing(false);
                 } else {
                   throw new Error(
@@ -621,6 +651,8 @@ export default function Home() {
                   setTracks(null);
                   setError(null);
                   setShowOtherTracks(false);
+                  setTargetFile(null);
+                  setSpeakerMatch(null);
                   heroRef.current?.scrollIntoView({ behavior: "smooth" });
                 }}
                 className="text-5xl font-bold tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-blue-400 to-purple-400 cursor-pointer hover:opacity-80 transition-opacity"
@@ -667,6 +699,57 @@ export default function Home() {
                     </p>
                   </div>
                 </div>
+              </div>
+
+              {/* Target Speaker Upload (optional) */}
+              <div className="space-y-2">
+                <input
+                  ref={targetInputRef}
+                  type="file"
+                  accept="audio/*"
+                  className="hidden"
+                  onChange={(e) => {
+                    if (e.target.files?.[0]) {
+                      setTargetFile(e.target.files[0]);
+                    }
+                  }}
+                />
+                {targetFile ? (
+                  <div className="glass rounded-xl px-4 py-3 flex items-center justify-between border border-amber-500/30 bg-amber-500/5">
+                    <div className="flex items-center gap-3">
+                      <div className="p-2 bg-amber-500/10 rounded-lg">
+                        <Target className="w-4 h-4 text-amber-400" />
+                      </div>
+                      <div>
+                        <p className="text-sm font-medium text-white/80">{targetFile.name}</p>
+                        <p className="text-xs text-white/40">Target speaker reference</p>
+                      </div>
+                    </div>
+                    <button
+                      onClick={() => setTargetFile(null)}
+                      className="p-1.5 rounded-lg hover:bg-white/10 transition-colors"
+                    >
+                      <X className="w-4 h-4 text-white/40" />
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    onClick={() => targetInputRef.current?.click()}
+                    className="w-full glass rounded-xl px-4 py-3 flex items-center gap-3 border border-dashed border-white/10 hover:border-amber-500/30 hover:bg-amber-500/5 transition-all duration-300 group"
+                  >
+                    <div className="p-2 bg-white/5 rounded-lg group-hover:bg-amber-500/10 transition-colors">
+                      <Target className="w-4 h-4 text-white/30 group-hover:text-amber-400 transition-colors" />
+                    </div>
+                    <div className="text-left">
+                      <p className="text-sm font-medium text-white/50 group-hover:text-white/70 transition-colors">
+                        Match Target Speaker
+                      </p>
+                      <p className="text-xs text-white/30">
+                        Optional • Upload a reference audio to find a matching voice
+                      </p>
+                    </div>
+                  </button>
+                )}
               </div>
 
               <div className="flex justify-center">
@@ -716,6 +799,29 @@ export default function Home() {
                   animate={{ opacity: 1, y: 0 }}
                   className="space-y-8"
                 >
+                  {/* Matched Person Section */}
+                  {speakerMatch && tracks && (
+                    <div className="space-y-4">
+                      <div className="flex items-center gap-3 pl-2 border-l-4 border-amber-500">
+                        <UserCheck className="w-5 h-5 text-amber-400" />
+                        <h2 className="text-2xl font-semibold text-white/90">
+                          Matched Person
+                        </h2>
+                        <span className="text-xs font-mono px-2.5 py-1 rounded-full bg-amber-500/15 text-amber-300 border border-amber-500/20">
+                          {Math.round(speakerMatch.similarity * 100)}% match
+                        </span>
+                      </div>
+                      <div className="relative">
+                        <div className="absolute -inset-0.5 bg-gradient-to-r from-amber-500/20 to-yellow-500/20 rounded-2xl blur-sm" />
+                        <div className="relative">
+                          <TrackCard
+                            track={tracks[speakerMatch.matched_index]}
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
                   {mainTracks.length > 0 && (
                     <div className="space-y-4">
                       <div className="flex items-center gap-3 pl-2 border-l-4 border-emerald-500">

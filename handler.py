@@ -146,10 +146,29 @@ def load_vad():
         logger.warning("Failed to load Silero VAD: %s", e)
 
 
+# ── Load SpeechBrain ECAPA-TDNN for speaker verification ─────
+ecapa_model = None
+
+def load_ecapa():
+    """Load SpeechBrain ECAPA-TDNN pretrained model for speaker embeddings."""
+    global ecapa_model
+    try:
+        from speechbrain.inference.speaker import EncoderClassifier
+        ecapa_model = EncoderClassifier.from_hparams(
+            source="speechbrain/spkrec-ecapa-voxceleb",
+            savedir="/app/models/ecapa",
+            run_opts={"device": "cuda" if torch.cuda.is_available() else "cpu"},
+        )
+        logger.info("SpeechBrain ECAPA-TDNN loaded")
+    except Exception as e:
+        logger.warning("Failed to load ECAPA-TDNN: %s", e)
+
+
 # Attempt to load all models at import time (cold start)
 load_model()
 load_whisper()
 load_vad()
+load_ecapa()
 
 
 # ─────────────────────────────────────────────────────────────
@@ -200,6 +219,51 @@ def audio_to_wav_bytes(audio_np: np.ndarray, sr: int) -> bytes:
     sf.write(buf, audio_np, sr, format="WAV", subtype="PCM_16")
     buf.seek(0)
     return buf.read()
+
+
+# ─────────────────────────────────────────────────────────────
+#  SPEAKER EMBEDDING (ECAPA-TDNN)
+# ─────────────────────────────────────────────────────────────
+def extract_speaker_embedding(audio_np: np.ndarray, sr: int):
+    """
+    Extract a 192-dim speaker embedding using ECAPA-TDNN.
+    Returns a normalised numpy vector, or None on failure.
+    """
+    if ecapa_model is None:
+        logger.warning("ECAPA model not loaded, can't extract embedding")
+        return None
+    try:
+        # ECAPA expects mono float32 tensor at 16 kHz
+        if sr != 16000:
+            import librosa
+            audio_np = librosa.resample(audio_np, orig_sr=sr, target_sr=16000)
+        waveform = torch.tensor(audio_np, dtype=torch.float32).unsqueeze(0)
+        embedding = ecapa_model.encode_batch(waveform)  # [1, 1, 192]
+        emb = embedding.squeeze().cpu().numpy()
+        # L2 normalise
+        norm = np.linalg.norm(emb)
+        if norm > 0:
+            emb = emb / norm
+        return emb
+    except Exception as e:
+        logger.warning("Embedding extraction failed: %s", e)
+        return None
+
+
+def match_speaker(target_emb: np.ndarray, track_embeddings: list):
+    """
+    Find the best-matching track by cosine similarity.
+    Returns (best_index, best_similarity, all_similarities).
+    """
+    similarities = []
+    for emb in track_embeddings:
+        if emb is not None and target_emb is not None:
+            sim = float(np.dot(target_emb, emb))  # both L2-normalised
+        else:
+            sim = 0.0
+        similarities.append(sim)
+    best_idx = int(np.argmax(similarities))
+    return best_idx, similarities[best_idx], similarities
 
 
 # ─────────────────────────────────────────────────────────────
@@ -478,6 +542,7 @@ def handler(job):
     # ── Validate input ───────────────────────────────────────
     audio_b64 = job_input.get("audio_base64")
     audio_url = job_input.get("audio_url")
+    target_b64 = job_input.get("target_audio_base64")  # optional target speaker
     if not audio_b64 and not audio_url:
         return {"error": "Provide either 'audio_base64' or 'audio_url' in input."}
 
@@ -532,6 +597,29 @@ def handler(job):
         else:
             track["transcription"] = {"text": "", "words": []}
 
+    # ── Speaker matching (optional) ────────────────────────────
+    speaker_match = None
+    if target_b64:
+        try:
+            target_audio = decode_audio(target_b64, sample_rate)
+            logger.info("Target speaker audio loaded: %.2f sec", len(target_audio) / sample_rate)
+            target_emb = extract_speaker_embedding(target_audio, sample_rate)
+            if target_emb is not None:
+                track_embs = [extract_speaker_embedding(t["audio_np"], sample_rate) for t in tracks]
+                best_idx, best_sim, all_sims = match_speaker(target_emb, track_embs)
+                speaker_match = {
+                    "matched_index": best_idx,
+                    "matched_speaker": tracks[best_idx]["speaker"],
+                    "similarity": round(best_sim, 4),
+                    "all_similarities": [round(s, 4) for s in all_sims],
+                }
+                logger.info("Speaker match: track %d (similarity=%.4f)",
+                            tracks[best_idx]["speaker"], best_sim)
+            else:
+                logger.warning("Could not extract target speaker embedding")
+        except Exception as e:
+            logger.warning("Speaker matching failed: %s", e)
+
     # ── Encode audio and build response ──────────────────────
     result_tracks = []
     for track in tracks:
@@ -546,11 +634,14 @@ def handler(job):
     main_count = sum(1 for t in result_tracks if t["is_main"])
     logger.info("Separated %d speakers (%d main voices, ElevenLabs enhanced)",
                 num_speakers, main_count)
-    return {
+    result = {
         "separated_tracks": result_tracks,
         "num_speakers": num_speakers,
         "main_voices": main_count,
     }
+    if speaker_match:
+        result["speaker_match"] = speaker_match
+    return result
 
 
 # ── Start RunPod serverless worker ───────────────────────────
