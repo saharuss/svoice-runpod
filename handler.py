@@ -224,100 +224,27 @@ def audio_to_wav_bytes(audio_np: np.ndarray, sr: int) -> bytes:
 # ─────────────────────────────────────────────────────────────
 #  SPEAKER EMBEDDING (ECAPA-TDNN)
 # ─────────────────────────────────────────────────────────────
-def _vad_extract_speech(audio_np: np.ndarray, sr: int) -> np.ndarray:
-    """
-    Use Silero VAD to keep only speech frames.
-    Returns concatenated speech-only audio (may be shorter than input).
-    Falls back to full audio if VAD fails or no speech detected.
-    """
-    if vad_model is None:
-        return audio_np
-
-    try:
-        if sr != 16000:
-            import librosa
-            audio_16k = librosa.resample(audio_np, orig_sr=sr, target_sr=16000)
-        else:
-            audio_16k = audio_np.copy()
-
-        tensor = torch.tensor(audio_16k, dtype=torch.float32)
-        window_size = 512
-        speech_frames = []
-
-        for i in range(0, len(tensor) - window_size, window_size):
-            chunk = tensor[i:i + window_size]
-            prob = vad_model(chunk, 16000).item()
-            if prob > 0.5:
-                speech_frames.append(audio_16k[i:i + window_size])
-
-        if len(speech_frames) < 4:  # Need at least ~128ms of speech
-            return audio_16k if sr == 16000 else audio_np
-
-        speech_only = np.concatenate(speech_frames)
-        logger.debug("VAD: kept %.1f%% of audio as speech",
-                     100 * len(speech_only) / len(audio_16k))
-        return speech_only
-
-    except Exception as e:
-        logger.warning("VAD speech extraction failed: %s", e)
-        return audio_np
-
-
 def extract_speaker_embedding(audio_np: np.ndarray, sr: int):
     """
-    Extract a robust 192-dim speaker embedding using ECAPA-TDNN.
-
-    Accuracy improvements over naive approach:
-    1. VAD filtering — only speech frames contribute to the embedding
-    2. Multi-segment averaging — split into overlapping 3s windows,
-       extract per-window embeddings, average for stability
-
+    Extract a 192-dim speaker embedding using ECAPA-TDNN.
     Returns a normalised numpy vector, or None on failure.
     """
     if ecapa_model is None:
         logger.warning("ECAPA model not loaded, can't extract embedding")
         return None
     try:
-        # Step 1: Resample to 16 kHz if needed
+        # ECAPA expects mono float32 tensor at 16 kHz
         if sr != 16000:
             import librosa
             audio_np = librosa.resample(audio_np, orig_sr=sr, target_sr=16000)
-
-        # Step 2: VAD — keep only speech frames
-        speech_audio = _vad_extract_speech(audio_np, 16000)
-
-        # Step 3: Multi-segment embedding averaging
-        seg_len = 3 * 16000   # 3 seconds per segment
-        hop_len = seg_len // 2  # 50% overlap
-        embeddings = []
-
-        if len(speech_audio) <= seg_len:
-            # Audio is short enough for a single embedding
-            waveform = torch.tensor(speech_audio, dtype=torch.float32).unsqueeze(0)
-            emb = ecapa_model.encode_batch(waveform).squeeze().cpu().numpy()
-            embeddings.append(emb)
-        else:
-            # Extract embedding per overlapping window
-            for start in range(0, len(speech_audio) - seg_len + 1, hop_len):
-                segment = speech_audio[start:start + seg_len]
-                waveform = torch.tensor(segment, dtype=torch.float32).unsqueeze(0)
-                emb = ecapa_model.encode_batch(waveform).squeeze().cpu().numpy()
-                embeddings.append(emb)
-
-        if not embeddings:
-            return None
-
-        # Average all segment embeddings
-        avg_emb = np.mean(embeddings, axis=0)
-
+        waveform = torch.tensor(audio_np, dtype=torch.float32).unsqueeze(0)
+        embedding = ecapa_model.encode_batch(waveform)  # [1, 1, 192]
+        emb = embedding.squeeze().cpu().numpy()
         # L2 normalise
-        norm = np.linalg.norm(avg_emb)
+        norm = np.linalg.norm(emb)
         if norm > 0:
-            avg_emb = avg_emb / norm
-
-        logger.debug("Extracted speaker embedding from %d segment(s)", len(embeddings))
-        return avg_emb
-
+            emb = emb / norm
+        return emb
     except Exception as e:
         logger.warning("Embedding extraction failed: %s", e)
         return None
@@ -671,22 +598,13 @@ def handler(job):
             track["transcription"] = {"text": "", "words": []}
 
     # ── Speaker matching (optional) ────────────────────────────
-    # NOTE: Runs AFTER ElevenLabs enhancement so embeddings come
-    # from the cleanest possible audio for both target and tracks.
     speaker_match = None
     if target_b64:
         try:
             target_audio = decode_audio(target_b64, sample_rate)
             logger.info("Target speaker audio loaded: %.2f sec", len(target_audio) / sample_rate)
-
-            # Enhance target audio with ElevenLabs voice isolation
-            target_audio = elevenlabs_voice_isolate(target_audio, sample_rate)
-            logger.info("Target speaker audio enhanced via ElevenLabs")
-
             target_emb = extract_speaker_embedding(target_audio, sample_rate)
             if target_emb is not None:
-                # Extract embeddings from enhanced tracks (audio_np is already
-                # updated to the ElevenLabs-enhanced version for main voices)
                 track_embs = [extract_speaker_embedding(t["audio_np"], sample_rate) for t in tracks]
                 best_idx, best_sim, all_sims = match_speaker(target_emb, track_embs)
                 speaker_match = {
