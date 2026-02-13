@@ -2,6 +2,7 @@
 "use client";
 
 import { useState, useCallback, useRef, useEffect } from "react";
+import Link from "next/link";
 import { useDropzone } from "react-dropzone";
 import axios from "axios";
 import {
@@ -696,6 +697,14 @@ export default function Home() {
     <div className="snap-container">
       {/* ── Section 1: Hero + Upload + Results ── */}
       <section ref={heroRef} className="snap-section relative overflow-hidden flex flex-col">
+        {/* Dev Button */}
+        <Link
+          href="/dev"
+          className="fixed top-4 left-4 z-50 flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/[0.06] hover:bg-white/[0.12] border border-white/[0.08] text-[11px] font-medium text-white/50 hover:text-white/80 transition-all backdrop-blur-sm"
+        >
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="16 18 22 12 16 6" /><polyline points="8 6 2 12 8 18" /></svg>
+          Dev
+        </Link>
         {/* Background Orbs */}
         <div className="absolute top-0 left-0 w-96 h-96 bg-purple-600/20 rounded-full blur-3xl -translate-x-1/2 -translate-y-1/2" />
         <div className="absolute bottom-0 right-0 w-96 h-96 bg-blue-600/20 rounded-full blur-3xl translate-x-1/2 translate-y-1/2" />
