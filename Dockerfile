@@ -37,7 +37,7 @@ RUN pip install --no-cache-dir \
     runpod==1.6.2 \
     requests==2.31.0 \
     speechbrain==1.0.0 \
-    huggingface_hub
+    "huggingface_hub<0.24"
 
 # ── Whisper for AI-powered voice scoring ────────────────────
 RUN pip install --no-cache-dir "setuptools<71" && \
