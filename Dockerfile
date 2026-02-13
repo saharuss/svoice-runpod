@@ -36,6 +36,7 @@ RUN pip install --no-cache-dir \
     omegaconf==2.3.0 \
     runpod==1.6.2 \
     requests==2.31.0 \
+    pydub==0.25.1 \
     speechbrain==1.0.0 \
     "huggingface_hub<0.24"
 

@@ -175,10 +175,24 @@ load_ecapa()
 #  AUDIO HELPERS
 # ─────────────────────────────────────────────────────────────
 def decode_audio(audio_base64: str, target_sr: int):
-    """Decode base64 audio into a numpy array at the target sample rate."""
+    """Decode base64 audio into a numpy array at the target sample rate.
+    Supports WAV, FLAC, OGG via soundfile, and M4A/AAC/MP3 via pydub+ffmpeg fallback."""
     audio_bytes = base64.b64decode(audio_base64)
     buf = io.BytesIO(audio_bytes)
-    data, sr = sf.read(buf, dtype="float32")
+
+    try:
+        data, sr = sf.read(buf, dtype="float32")
+    except Exception:
+        # Fallback for formats soundfile can't handle (m4a, aac, some mp3)
+        from pydub import AudioSegment
+        buf.seek(0)
+        seg = AudioSegment.from_file(buf)
+        sr = seg.frame_rate
+        samples = np.array(seg.get_array_of_samples(), dtype=np.float32)
+        if seg.channels > 1:
+            samples = samples.reshape((-1, seg.channels)).mean(axis=1)
+        data = samples / (2 ** (seg.sample_width * 8 - 1))  # normalize to [-1, 1]
+
     # Convert to mono if stereo
     if data.ndim > 1:
         data = data.mean(axis=1)
