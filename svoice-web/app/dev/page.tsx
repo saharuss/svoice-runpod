@@ -15,6 +15,8 @@ import {
     Wifi,
     WifiOff,
     BarChart3,
+    Download,
+    CheckCircle2,
 } from "lucide-react";
 
 // ── VM Config ──
@@ -22,6 +24,12 @@ import {
 const METRICS_URL = `/api/metrics`;
 const POLL_INTERVAL = 10_000;
 const SPOT_PRICE = 0.22;
+
+interface DownloadableFile {
+    name: string;
+    size_bytes: number;
+    size_human: string;
+}
 
 interface Metrics {
     status: string;
@@ -42,6 +50,8 @@ interface Metrics {
     history: Array<{ train: number; valid: number; lr?: number }>;
     log_tail: string[];
     dataset_progress: string;
+    training_complete: boolean;
+    downloadable_files: DownloadableFile[];
 }
 
 function StatusDot({ status }: { status: string }) {
@@ -515,6 +525,75 @@ export default function DevDashboard() {
                         )}
                     </div>
                 </div>
+
+                {/* Download Section */}
+                {(metrics?.downloadable_files?.length ?? 0) > 0 && (
+                    <div className={`glass-card rounded-2xl p-6 ${metrics?.training_complete
+                            ? "ring-1 ring-emerald-500/30 bg-gradient-to-br from-emerald-500/[0.04] to-transparent"
+                            : ""
+                        }`}>
+                        <div className="flex items-center gap-3 mb-4">
+                            {metrics?.training_complete ? (
+                                <CheckCircle2 className="w-5 h-5 text-emerald-400" />
+                            ) : (
+                                <Download className="w-4 h-4 text-white/40" />
+                            )}
+                            <div>
+                                <h3 className="text-xs font-semibold text-white/40 uppercase tracking-widest">
+                                    {metrics?.training_complete
+                                        ? "🎉 Training Complete — Download Model"
+                                        : "📦 Available Files"}
+                                </h3>
+                                {metrics?.training_complete && (
+                                    <p className="text-[11px] text-emerald-400/60 mt-0.5">
+                                        Best loss: {metrics?.best_loss?.toFixed(4)} • {metrics?.total_epochs} epochs
+                                    </p>
+                                )}
+                            </div>
+                        </div>
+                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                            {metrics?.downloadable_files?.map((file) => (
+                                <a
+                                    key={file.name}
+                                    href={`/api/download?file=${file.name}`}
+                                    download={file.name}
+                                    className="flex items-center justify-between p-4 rounded-xl bg-white/[0.03] hover:bg-white/[0.08] border border-white/[0.06] hover:border-violet-500/30 transition-all group cursor-pointer"
+                                >
+                                    <div className="flex items-center gap-3">
+                                        <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${file.name === "best.th"
+                                                ? "bg-emerald-500/20"
+                                                : file.name === "checkpoint.th"
+                                                    ? "bg-violet-500/20"
+                                                    : "bg-blue-500/20"
+                                            }`}>
+                                            <Download className={`w-3.5 h-3.5 ${file.name === "best.th"
+                                                    ? "text-emerald-400"
+                                                    : file.name === "checkpoint.th"
+                                                        ? "text-violet-400"
+                                                        : "text-blue-400"
+                                                }`} />
+                                        </div>
+                                        <div>
+                                            <div className="text-sm font-medium text-white/80 group-hover:text-white transition-colors">
+                                                {file.name}
+                                            </div>
+                                            <div className="text-[10px] text-white/30">
+                                                {file.name === "best.th"
+                                                    ? "Best model weights"
+                                                    : file.name === "checkpoint.th"
+                                                        ? "Latest checkpoint"
+                                                        : "Training history"}
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <span className="text-[11px] text-white/30 group-hover:text-white/50">
+                                        {file.size_human}
+                                    </span>
+                                </a>
+                            ))}
+                        </div>
+                    </div>
+                )}
             </main>
 
             <style jsx>{`

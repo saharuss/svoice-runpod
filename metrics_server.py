@@ -2,14 +2,42 @@
 """
 Simple HTTP metrics server for the SVoice training VM.
 Exposes training metrics as JSON on port 8080.
+Also serves model file downloads when training is complete.
 Accessed by the Next.js dev dashboard.
 """
 import json
 import os
+import glob
 import http.server
 import subprocess
 
 PORT = 8080
+
+# Files available for download after training
+DOWNLOADABLE_FILES = ["best.th", "checkpoint.th", "history.json"]
+
+def get_output_dir():
+    """Find the training output directory."""
+    dirs = glob.glob(os.path.expanduser("~/svoice_demo/outputs/exp_*/"))
+    return dirs[0] if dirs else None
+
+def get_downloadable_files():
+    """Check which model files exist and return their info."""
+    out_dir = get_output_dir()
+    if not out_dir:
+        return []
+    files = []
+    for name in DOWNLOADABLE_FILES:
+        path = os.path.join(out_dir, name)
+        if os.path.exists(path):
+            size_bytes = os.path.getsize(path)
+            if size_bytes > 0:
+                files.append({
+                    "name": name,
+                    "size_bytes": size_bytes,
+                    "size_human": f"{size_bytes / (1024*1024):.1f} MB" if size_bytes > 1024*1024 else f"{size_bytes / 1024:.1f} KB",
+                })
+    return files
 
 def get_metrics():
     """Collect all training metrics."""
@@ -32,6 +60,8 @@ def get_metrics():
         "history": [],
         "log_tail": [],
         "dataset_progress": "",
+        "training_complete": False,
+        "downloadable_files": [],
     }
 
     # GPU info
@@ -64,7 +94,6 @@ def get_metrics():
 
     # Training history
     try:
-        import glob
         history_files = glob.glob(os.path.expanduser("~/svoice_demo/outputs/exp_*/history.json"))
         if history_files:
             with open(history_files[0]) as f:
@@ -78,12 +107,18 @@ def get_metrics():
                     metrics["best_loss"] = min(h.get("valid", 999) for h in history)
                     metrics["lr"] = latest.get("lr", 0)
                     metrics["status"] = "training"
+                    # Check if training is complete
+                    if len(history) >= metrics["total_epochs"]:
+                        metrics["status"] = "complete"
+                        metrics["training_complete"] = True
     except Exception:
         pass
 
+    # Downloadable files
+    metrics["downloadable_files"] = get_downloadable_files()
+
     # Trainer log tail
     try:
-        import glob
         log_files = glob.glob(os.path.expanduser("~/svoice_demo/outputs/exp_*/trainer.log"))
         if log_files:
             with open(log_files[0]) as f:
@@ -138,6 +173,29 @@ class MetricsHandler(http.server.BaseHTTPRequestHandler):
             self.send_header("Cache-Control", "no-cache")
             self.end_headers()
             self.wfile.write(json.dumps(get_metrics()).encode())
+        elif self.path.startswith("/download/"):
+            filename = self.path.split("/download/")[-1]
+            if filename not in DOWNLOADABLE_FILES:
+                self.send_error(400, "Invalid file")
+                return
+            out_dir = get_output_dir()
+            if not out_dir:
+                self.send_error(404, "No training output found")
+                return
+            filepath = os.path.join(out_dir, filename)
+            if not os.path.exists(filepath):
+                self.send_error(404, f"{filename} not found")
+                return
+            file_size = os.path.getsize(filepath)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/octet-stream")
+            self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+            self.send_header("Content-Length", str(file_size))
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            with open(filepath, "rb") as f:
+                while chunk := f.read(65536):
+                    self.wfile.write(chunk)
         elif self.path == "/health":
             self.send_response(200)
             self.send_header("Content-Type", "text/plain")
