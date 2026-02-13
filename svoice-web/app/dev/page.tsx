@@ -505,6 +505,39 @@ export default function DevDashboard() {
                     </div>
                 </div>
 
+                {/* Training Configuration */}
+                <div className="glass-card rounded-2xl p-5">
+                    <h3 className="text-xs font-semibold text-white/40 uppercase tracking-widest mb-3">
+                        ⚙️ Training Configuration
+                    </h3>
+                    <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+                        {[
+                            { label: "Encoder (N)", value: "256", paper: "128", better: true },
+                            { label: "Hidden (H)", value: "256", paper: "128", better: true },
+                            { label: "Layers (R)", value: "10", paper: "6", better: true },
+                            { label: "Speakers (C)", value: "10", paper: "2-5", better: true },
+                            { label: "Sample Rate", value: "16kHz", paper: "8kHz", better: true },
+                            { label: "Batch Size", value: "2", paper: "4", better: false },
+                            { label: "Learning Rate", value: "3e-4", paper: "5e-4", better: null },
+                            { label: "Epochs", value: "200", paper: "100", better: true },
+                            { label: "LR Schedule", value: "plateau", paper: "step", better: true },
+                            { label: "Segment", value: "4s", paper: "4s", better: null },
+                            { label: "Dataset", value: "20k", paper: "~20k", better: null },
+                            { label: "Noise", value: "WHAM!", paper: "WHAM!", better: null },
+                        ].map((cfg) => (
+                            <div key={cfg.label} className="bg-white/[0.02] border border-white/[0.05] rounded-lg p-2.5 text-center">
+                                <div className="text-[10px] text-white/30 mb-1">{cfg.label}</div>
+                                <div className="text-sm font-semibold text-white/80">{cfg.value}</div>
+                                <div className={`text-[9px] mt-0.5 ${cfg.better === true ? "text-emerald-400/60" :
+                                        cfg.better === false ? "text-amber-400/60" :
+                                            "text-white/20"
+                                    }`}>
+                                    paper: {cfg.paper} {cfg.better === true ? "▲" : cfg.better === false ? "▼" : "="}
+                                </div>
+                            </div>
+                        ))}
+                    </div>
+                </div>
                 {/* Log */}
                 <div className="glass-card rounded-2xl p-5">
                     <h3 className="text-xs font-semibold text-white/40 uppercase tracking-widest mb-3">
