@@ -6,7 +6,7 @@ import axios from "axios";
 const RUNPOD_API_KEY = process.env.RUNPOD_API_KEY;
 const RUNPOD_ENDPOINT_ID = process.env.RUNPOD_ENDPOINT_ID;
 
-export const maxDuration = 10; // Short duration for status check
+export const maxDuration = 60; // Allow time for large response payloads
 
 export async function GET(req: NextRequest) {
     if (!RUNPOD_API_KEY || !RUNPOD_ENDPOINT_ID) {
@@ -33,7 +33,7 @@ export async function GET(req: NextRequest) {
             headers: {
                 Authorization: `Bearer ${RUNPOD_API_KEY}`,
             },
-            timeout: 5000,
+            timeout: 30000,
         });
 
         const data = response.data;

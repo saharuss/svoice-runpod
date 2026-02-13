@@ -185,9 +185,11 @@ def download_audio(url: str, target_sr: int):
 
 
 def encode_audio(audio_np: np.ndarray, sr: int) -> str:
-    """Encode a numpy audio array to base64 WAV string."""
+    """Encode a numpy audio array to base64 WAV string (PCM_16 for browser compatibility)."""
     buf = io.BytesIO()
-    sf.write(buf, audio_np, sr, format="WAV", subtype="FLOAT")
+    # Clip to [-1, 1] before PCM_16 encoding to avoid clipping distortion
+    audio_clipped = np.clip(audio_np, -1.0, 1.0)
+    sf.write(buf, audio_clipped, sr, format="WAV", subtype="PCM_16")
     buf.seek(0)
     return base64.b64encode(buf.read()).decode("utf-8")
 

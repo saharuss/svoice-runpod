@@ -15,6 +15,10 @@ import {
   Mic,
   AudioLines,
   FileText,
+  Mail,
+  Play,
+  Pause,
+  Volume2,
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 
@@ -50,18 +54,29 @@ function ConfidenceBadge({ confidence }: { confidence: number }) {
   );
 }
 
+function formatTime(seconds: number): string {
+  if (!isFinite(seconds) || seconds < 0) return "0:00";
+  const m = Math.floor(seconds / 60);
+  const s = Math.floor(seconds % 60);
+  return `${m}:${s.toString().padStart(2, "0")}`;
+}
+
 function TrackCard({ track }: { track: Track }) {
   const audioRef = useRef<HTMLAudioElement>(null);
+  const progressRef = useRef<HTMLDivElement>(null);
   const animRef = useRef<number>(0);
-  const [currentTime, setCurrentTime] = useState(-1);
+  const [currentTime, setCurrentTime] = useState(0);
+  const [duration, setDuration] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
 
   const hasWords = track.transcription?.words && track.transcription.words.length > 0;
+  const progress = duration > 0 ? (currentTime / duration) * 100 : 0;
 
   useEffect(() => {
     const audio = audioRef.current;
     if (!audio) return;
 
+    const onLoadedMetadata = () => setDuration(audio.duration);
     const onPlay = () => {
       setIsPlaying(true);
       const tick = () => {
@@ -70,23 +85,26 @@ function TrackCard({ track }: { track: Track }) {
       };
       animRef.current = requestAnimationFrame(tick);
     };
-
     const onPause = () => {
       setIsPlaying(false);
       cancelAnimationFrame(animRef.current);
     };
-
     const onEnded = () => {
       setIsPlaying(false);
-      setCurrentTime(-1);
+      setCurrentTime(0);
       cancelAnimationFrame(animRef.current);
     };
 
+    audio.addEventListener("loadedmetadata", onLoadedMetadata);
     audio.addEventListener("play", onPlay);
     audio.addEventListener("pause", onPause);
     audio.addEventListener("ended", onEnded);
 
+    // If already loaded
+    if (audio.duration) setDuration(audio.duration);
+
     return () => {
+      audio.removeEventListener("loadedmetadata", onLoadedMetadata);
       audio.removeEventListener("play", onPlay);
       audio.removeEventListener("pause", onPause);
       audio.removeEventListener("ended", onEnded);
@@ -94,8 +112,36 @@ function TrackCard({ track }: { track: Track }) {
     };
   }, []);
 
+  const togglePlayback = () => {
+    const audio = audioRef.current;
+    if (!audio) return;
+    if (isPlaying) {
+      audio.pause();
+    } else {
+      audio.play();
+    }
+  };
+
+  const handleSeek = (e: React.MouseEvent<HTMLDivElement>) => {
+    const audio = audioRef.current;
+    const bar = progressRef.current;
+    if (!audio || !bar || !duration) return;
+    const rect = bar.getBoundingClientRect();
+    const x = Math.max(0, Math.min(e.clientX - rect.left, rect.width));
+    audio.currentTime = (x / rect.width) * duration;
+    setCurrentTime(audio.currentTime);
+  };
+
   return (
     <div className="glass p-4 rounded-xl space-y-3 group hover:bg-white/10 transition-colors">
+      {/* Hidden native audio element */}
+      <audio
+        ref={audioRef}
+        src={`data:audio/wav;base64,${track.audio_base64}`}
+        preload="metadata"
+      />
+
+      {/* Header: speaker info + download */}
       <div className="flex items-center justify-between gap-4">
         <div className="flex items-center gap-4">
           <div
@@ -116,27 +162,80 @@ function TrackCard({ track }: { track: Track }) {
             </p>
           </div>
         </div>
-        <div className="flex items-center gap-3">
-          <audio
-            ref={audioRef}
-            controls
-            src={`data:audio/wav;base64,${track.audio_base64}`}
-            className="w-full max-w-[200px] h-10 opacity-80 hover:opacity-100 transition-opacity"
-          />
-          <button
-            onClick={() => {
-              const link = document.createElement("a");
-              link.href = `data:audio/wav;base64,${track.audio_base64}`;
-              link.download = `speaker_${track.speaker}.wav`;
-              link.click();
-            }}
-            className="p-2 rounded-full bg-white/10 hover:bg-white/20 transition-colors text-white/80 hover:text-white"
-            title="Download Track"
-          >
-            <Download className="w-5 h-5" />
-          </button>
-        </div>
+        <button
+          onClick={() => {
+            const link = document.createElement("a");
+            link.href = `data:audio/wav;base64,${track.audio_base64}`;
+            link.download = `speaker_${track.speaker}.wav`;
+            link.click();
+          }}
+          className="p-2 rounded-full bg-white/10 hover:bg-white/20 transition-colors text-white/80 hover:text-white"
+          title="Download Track"
+        >
+          <Download className="w-5 h-5" />
+        </button>
       </div>
+
+      {/* Custom Audio Player */}
+      <div className={`flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all duration-300 ${isPlaying
+          ? "bg-purple-500/10 border border-purple-500/20 shadow-[0_0_15px_rgba(168,85,247,0.1)]"
+          : "bg-white/5 border border-white/5 hover:border-white/10"
+        }`}>
+        {/* Play/Pause Button */}
+        <button
+          onClick={togglePlayback}
+          className={`w-9 h-9 rounded-full flex items-center justify-center shrink-0 transition-all duration-200 ${isPlaying
+              ? "bg-purple-500 text-white shadow-[0_0_12px_rgba(168,85,247,0.5)] hover:bg-purple-400"
+              : "bg-white/10 text-white/70 hover:bg-white/20 hover:text-white"
+            }`}
+        >
+          {isPlaying ? (
+            <Pause className="w-4 h-4" />
+          ) : (
+            <Play className="w-4 h-4 ml-0.5" />
+          )}
+        </button>
+
+        {/* Time (current) */}
+        <span className="text-xs font-mono text-white/50 w-9 shrink-0 text-right">
+          {formatTime(currentTime)}
+        </span>
+
+        {/* Progress Bar */}
+        <div
+          ref={progressRef}
+          onClick={handleSeek}
+          className="flex-1 h-1.5 bg-white/10 rounded-full cursor-pointer group/bar relative overflow-hidden"
+        >
+          {/* Filled portion */}
+          <div
+            className={`h-full rounded-full transition-colors duration-200 relative ${isPlaying
+                ? "bg-gradient-to-r from-purple-500 to-blue-400"
+                : "bg-white/30"
+              }`}
+            style={{ width: `${progress}%` }}
+          >
+            {/* Glow dot at the end */}
+            {progress > 0 && (
+              <div className={`absolute right-0 top-1/2 -translate-y-1/2 w-2.5 h-2.5 rounded-full transition-opacity duration-200 ${isPlaying
+                  ? "bg-white shadow-[0_0_8px_rgba(168,85,247,0.8)] opacity-100"
+                  : "bg-white/60 opacity-0 group-hover/bar:opacity-100"
+                }`} />
+            )}
+          </div>
+        </div>
+
+        {/* Time (duration) */}
+        <span className="text-xs font-mono text-white/30 w-9 shrink-0">
+          {formatTime(duration)}
+        </span>
+
+        {/* Volume icon (decorative) */}
+        <Volume2 className={`w-3.5 h-3.5 shrink-0 transition-colors ${isPlaying ? "text-purple-400/60" : "text-white/20"
+          }`} />
+      </div>
+
+      {/* Transcription with word highlighting */}
       {hasWords && (
         <div className="ml-14 p-3 rounded-lg bg-white/5 border border-white/10">
           <div className="flex items-center gap-2 mb-2">
@@ -147,7 +246,6 @@ function TrackCard({ track }: { track: Track }) {
             {track.transcription!.words.map((word, i) => {
               const isActive = isPlaying && currentTime >= word.start && currentTime < word.end;
               const isPast = isPlaying && currentTime >= word.end;
-              const isFuture = !isPlaying || currentTime < word.start;
 
               return (
                 <span
@@ -312,8 +410,15 @@ export default function Home() {
     }
   };
 
-  const mainTracks = tracks?.filter((t) => t.is_main) ?? [];
-  const otherTracks = tracks?.filter((t) => !t.is_main) ?? [];
+  // Cap at 7 speakers max
+  const cappedTracks = tracks?.slice(0, 7) ?? [];
+  // Classify by transcription: Main Voices have words, Other Tracks don't
+  const mainTracks = cappedTracks.filter(
+    (t) => t.transcription?.words && t.transcription.words.length > 0
+  );
+  const otherTracks = cappedTracks.filter(
+    (t) => !t.transcription?.words || t.transcription.words.length === 0
+  );
 
   return (
     <main className="flex min-h-screen flex-col items-center justify-center p-6 sm:p-24 relative overflow-hidden">
@@ -480,6 +585,17 @@ export default function Home() {
             </motion.div>
           )}
         </AnimatePresence>
+
+        {/* Footer with contact email */}
+        <footer className="pt-8 border-t border-white/10 text-center">
+          <a
+            href="mailto:sjiradej@ucsc.edu"
+            className="inline-flex items-center gap-2 text-sm text-white/40 hover:text-purple-400 transition-colors"
+          >
+            <Mail className="w-4 h-4" />
+            sjiradej@ucsc.edu
+          </a>
+        </footer>
       </div>
     </main>
   );
