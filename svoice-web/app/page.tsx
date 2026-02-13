@@ -61,6 +61,7 @@ interface IdentityMatch {
 
 // ── Sample data ──────────────────────────────────────────────
 const SAMPLES = [
+  { file: "/samples/2people.m4a", label: "2 Speakers", speakers: 2, duration: "5s" },
   { file: "/samples/4people.wav", label: "4 Speakers", speakers: 4, duration: "7s" },
   { file: "/samples/5people.wav", label: "5 Speakers", speakers: 5, duration: "7s" },
   { file: "/samples/7people.wav", label: "7 Speakers", speakers: 7, duration: "10s" },
