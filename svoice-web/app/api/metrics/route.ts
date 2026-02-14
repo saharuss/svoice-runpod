@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 
-const VM_METRICS_URL = "http://34.55.45.65:8080/api/metrics";
+const VM_METRICS_URL = "http://104.198.245.51:8080/api/metrics";
 
 export async function GET() {
     try {
