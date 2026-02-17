@@ -17,9 +17,12 @@ PORT = 8080
 DOWNLOADABLE_FILES = ["best.th", "checkpoint.th", "history.json"]
 
 def get_output_dir():
-    """Find the training output directory."""
+    """Find the most recently modified training output directory."""
     dirs = glob.glob(os.path.expanduser("~/svoice_demo/outputs/exp_*/"))
-    return dirs[0] if dirs else None
+    if not dirs:
+        return None
+    # Return the most recently modified directory
+    return max(dirs, key=os.path.getmtime)
 
 def get_downloadable_files():
     """Check which model files exist and return their info."""
@@ -139,55 +142,87 @@ def get_metrics():
 
     # Dataset generation progress (if no training yet)
     if metrics["current_epoch"] == 0:
-        try:
-            # Prefer upgrade.log (10-speaker gen), fall back to dataset_gen.log
-            log_candidates = [
-                os.path.expanduser("~/upgrade.log"),
-                os.path.expanduser("~/dataset_gen.log"),
-            ]
-            log_path = None
-            for candidate in log_candidates:
-                if os.path.exists(candidate) and os.path.getsize(candidate) > 0:
-                    log_path = candidate
-                    break
-
-            if log_path:
-                with open(log_path) as f:
+        # First check if training is actively running but hasn't completed epoch 1 yet
+        training_active = metrics["gpu_mem_used"] > 1000  # >1GB means model is loaded
+        
+        # Also check for trainer.log from current experiment
+        out_dir = get_output_dir()
+        trainer_log = None
+        if out_dir:
+            log_path = os.path.join(out_dir, "trainer.log")
+            if os.path.exists(log_path):
+                trainer_log = log_path
+        
+        if training_active and trainer_log:
+            # Training is running, just hasn't finished epoch 1
+            metrics["status"] = "training (initializing)"
+            try:
+                with open(trainer_log) as f:
                     lines = f.readlines()
-                    tail = [l.strip() for l in lines[-10:] if l.strip()]
-                    metrics["log_tail"] = tail[-5:]
-                    # Parse tqdm-style progress: "2%|▏  | 309/20000 [53:38<55:42:02, 10.18s/it]"
-                    import re
-                    for line in reversed(tail):
-                        m = re.search(r'(\d+)%\|.*?\|\s*(\d+)/(\d+)\s*\[([^<]+)<([^,]+),\s*([^\]]+)\]', line)
-                        if m:
-                            pct, current, total = m.group(1), m.group(2), m.group(3)
-                            elapsed, remaining, rate = m.group(4), m.group(5), m.group(6)
-                            metrics["dataset_progress"] = f"{current}/{total}"
-                            metrics["status"] = f"generating dataset ({pct}% — {current}/{total}, ETA {remaining})"
-                            break
-                        # Also check for wget-style percentage
-                        parts = line.split()
-                        for p in parts:
-                            if p.endswith('%') and p[:-1].isdigit():
-                                metrics["dataset_progress"] = p
-                                metrics["status"] = f"downloading ({p})"
-                                break
-                        if metrics["dataset_progress"]:
-                            break
-                    if not metrics["dataset_progress"]:
-                        metrics["status"] = "generating dataset"
-            else:
-                setup_path = os.path.expanduser("~/setup.log")
-                if os.path.exists(setup_path):
-                    with open(setup_path) as f:
+                    metrics["log_tail"] = [l.strip() for l in lines[-20:]]
+            except Exception:
+                pass
+        elif training_active:
+            metrics["status"] = "training (loading model)"
+            # Show training.log from home if exists
+            try:
+                tlog = os.path.expanduser("~/training.log")
+                if os.path.exists(tlog):
+                    with open(tlog) as f:
                         lines = f.readlines()
-                        metrics["log_tail"] = [l.strip() for l in lines[-5:]]
-                        metrics["status"] = "setting up"
+                        metrics["log_tail"] = [l.strip() for l in lines[-10:] if l.strip()]
+            except Exception:
+                pass
+        else:
+            try:
+                # Prefer upgrade.log (10-speaker gen), fall back to dataset_gen.log
+                log_candidates = [
+                    os.path.expanduser("~/upgrade.log"),
+                    os.path.expanduser("~/dataset_gen.log"),
+                ]
+                log_path = None
+                for candidate in log_candidates:
+                    if os.path.exists(candidate) and os.path.getsize(candidate) > 0:
+                        log_path = candidate
+                        break
+
+                if log_path:
+                    with open(log_path) as f:
+                        lines = f.readlines()
+                        tail = [l.strip() for l in lines[-10:] if l.strip()]
+                        metrics["log_tail"] = tail[-5:]
+                        # Parse tqdm-style progress: "2%|▏  | 309/20000 [53:38<55:42:02, 10.18s/it]"
+                        import re
+                        for line in reversed(tail):
+                            m = re.search(r'(\d+)%\|.*?\|\s*(\d+)/(\d+)\s*\[([^<]+)<([^,]+),\s*([^\]]+)\]', line)
+                            if m:
+                                pct, current, total = m.group(1), m.group(2), m.group(3)
+                                elapsed, remaining, rate = m.group(4), m.group(5), m.group(6)
+                                metrics["dataset_progress"] = f"{current}/{total}"
+                                metrics["status"] = f"generating dataset ({pct}% — {current}/{total}, ETA {remaining})"
+                                break
+                            # Also check for wget-style percentage
+                            parts = line.split()
+                            for p in parts:
+                                if p.endswith('%') and p[:-1].isdigit():
+                                    metrics["dataset_progress"] = p
+                                    metrics["status"] = f"downloading ({p})"
+                                    break
+                            if metrics["dataset_progress"]:
+                                break
+                        if not metrics["dataset_progress"]:
+                            metrics["status"] = "generating dataset"
                 else:
-                    metrics["status"] = "waiting"
-        except Exception:
-            metrics["status"] = "unknown"
+                    setup_path = os.path.expanduser("~/setup.log")
+                    if os.path.exists(setup_path):
+                        with open(setup_path) as f:
+                            lines = f.readlines()
+                            metrics["log_tail"] = [l.strip() for l in lines[-5:]]
+                            metrics["status"] = "setting up"
+                    else:
+                        metrics["status"] = "waiting"
+            except Exception:
+                metrics["status"] = "unknown"
 
     return metrics
 
